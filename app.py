@@ -217,6 +217,44 @@ st.markdown("""
         margin-left: 6px;
     }
 
+    .section-card {
+        background-color: var(--secondary-background-color, #f8fafc);
+        border: 1px solid rgba(148, 163, 184, 0.25);
+        border-radius: 8px;
+        padding: 18px;
+        margin-bottom: 16px;
+    }
+
+    .badge-fastq {
+        background-color: rgba(37, 99, 235, 0.12);
+        color: #2563eb;
+        font-size: 0.75rem;
+        font-weight: 600;
+        padding: 4px 10px;
+        border-radius: 9999px;
+        border: 1px solid rgba(37, 99, 235, 0.25);
+    }
+
+    .badge-fasta {
+        background-color: rgba(5, 150, 105, 0.12);
+        color: #059669;
+        font-size: 0.75rem;
+        font-weight: 600;
+        padding: 4px 10px;
+        border-radius: 9999px;
+        border: 1px solid rgba(5, 150, 105, 0.25);
+    }
+
+    .info-callout {
+        background-color: rgba(15, 118, 110, 0.08);
+        border-left: 4px solid #0f766e;
+        border-radius: 0 6px 6px 0;
+        padding: 12px 16px;
+        font-size: 0.85rem;
+        color: var(--text-color, #0f172a);
+        margin: 12px 0 16px 0;
+    }
+
     .stTabs [data-baseweb="tab-list"] {
         border-bottom: 1px solid rgba(148, 163, 184, 0.25);
         gap: 16px;
@@ -225,7 +263,7 @@ st.markdown("""
     .stTabs [data-baseweb="tab"] {
         font-weight: 500;
         color: #64748b;
-        padding: 8px 12px;
+        padding: 8px 14px;
         border-bottom: 2px solid transparent;
         background: transparent;
     }
@@ -402,6 +440,77 @@ def render_igv_viewer(
     components.html(igv_html, height=480, scrolling=False)
 
 
+def run_pipeline_execution(cfg: PipelineConfig, file_path: Path):
+    """
+    Executes the complete WildPrimer pipeline stages:
+    QC / Deduplication -> SSR Mining -> Primer3 Design.
+    """
+    with st.spinner("Procesando secuencias y ejecutando motor Primer3..."):
+        prog_bar = st.progress(10)
+        status_text = st.empty()
+
+        status_text.text("Etapa 1/3: Preparación, control de calidad y desreplicación...")
+        preprocessor = ReadPreprocessor.from_config(cfg)
+        processed_dir = ROOT_DIR / "data" / "processed"
+
+        target_fasta, detected_mode, metrics = preprocessor.prepare_input(
+            input_file=file_path,
+            output_dir=processed_dir,
+            force_mode="auto",
+            max_reads=cfg.max_reads,
+            assembly_config=cfg.assembly
+        )
+        prog_bar.progress(45)
+
+        status_text.text("Etapa 2/3: Detección bioinformática de microsatélites (SSRs)...")
+        records = list(SeqIO.parse(str(target_fasta), "fasta"))
+        detector = SSRDetector(min_repeats=cfg.ssr.min_repeats, flank_size=cfg.ssr.flank_size)
+        designer = PrimerDesigner.from_config(cfg.primer)
+
+        combined_results = []
+        sequences_store = {}
+        designed_count = 0
+
+        status_text.text("Etapa 3/3: Cálculo termodinámico de partidores Primer3...")
+        total_recs = len(records)
+        for i, rec in enumerate(records):
+            seq_str = str(rec.seq).upper()
+            sequences_store[rec.id] = seq_str
+            markers = detector.find_markers_in_sequence(rec)
+
+            for m in markers:
+                row_data = m.to_dict()
+                p_pair = designer.design_for_marker(seq_str, m.start, m.length)
+                if p_pair:
+                    designed_count += 1
+                    row_data.update(p_pair.to_dict())
+                    row_data["primer_status"] = "DESIGNED"
+                else:
+                    row_data["primer_status"] = "FAILED_CONSTRAINTS"
+                    for k in [
+                        "primer_forward_seq", "primer_reverse_seq", "primer_forward_tm",
+                        "primer_reverse_tm", "primer_forward_gc_percent", "primer_reverse_gc_percent",
+                        "amplicon_size_bp"
+                    ]:
+                        row_data[k] = None
+                combined_results.append(row_data)
+
+            if total_recs > 0 and (i % 200 == 0 or i == total_recs - 1):
+                prog_bar.progress(45 + int(50 * (i + 1) / total_recs))
+
+        prog_bar.progress(100)
+        status_text.empty()
+        prog_bar.empty()
+
+        st.session_state["results_df"] = pd.DataFrame(combined_results)
+        st.session_state["sequences_store"] = sequences_store
+        st.session_state["metrics"] = metrics
+        st.session_state["records_count"] = len(records)
+        st.session_state["designed_count"] = designed_count
+        st.session_state["executed_file"] = file_path.name
+        st.success(f"Pipeline completado: {designed_count:,} pares de partidores diseñados para {len(combined_results):,} microsatélites.")
+
+
 def main():
     # Platform Header
     st.markdown("""
@@ -412,220 +521,331 @@ def main():
     """, unsafe_allow_html=True)
 
     # -------------------------------------------------------------------------
-    # SIDEBAR: Modular Parameters & Platform Presets
+    # CONFIGURATION & STATE INITIALIZATION
+    # -------------------------------------------------------------------------
+    preset_key_map = {
+        "Roche 454 (Pool-Seq de Nothofagus)": "roche-454",
+        "Illumina (Lecturas Cortas / RNA-seq)": "illumina",
+        "PacBio HiFi (Lecturas Largas)": "pacbio-hifi",
+        "Ensamble De Novo (Cóntigos FASTA)": "assembly",
+        "Perfil Personalizado": "custom"
+    }
+
+    if "active_preset_name" not in st.session_state:
+        st.session_state["active_preset_name"] = "Roche 454 (Pool-Seq de Nothofagus)"
+
+    if "cfg" not in st.session_state:
+        st.session_state["cfg"] = PipelineConfig.from_preset("roche-454")
+
+    cfg = st.session_state["cfg"]
+
+    # -------------------------------------------------------------------------
+    # SIDEBAR: Presets & Estado del Pipeline
     # -------------------------------------------------------------------------
     with st.sidebar:
-        st.markdown("### Sequencing Profile")
-
+        st.markdown("### Perfil de Secuenciación")
         preset_choice = st.selectbox(
-            "Platform Preset",
-            ["Roche 454 (e.g. Nothofagus Pool-Seq)", "Illumina (Short Reads / RNA-seq)", "PacBio HiFi (Long Reads)", "De Novo Assembly (FASTA)", "Custom Profile"],
+            "Preset de Plataforma",
+            list(preset_key_map.keys()),
+            index=list(preset_key_map.keys()).index(st.session_state["active_preset_name"])
+        )
+
+        if preset_choice != st.session_state["active_preset_name"]:
+            st.session_state["active_preset_name"] = preset_choice
+            active_key = preset_key_map[preset_choice]
+            if active_key != "custom":
+                st.session_state["cfg"] = PipelineConfig.from_preset(active_key)
+            else:
+                st.session_state["cfg"] = PipelineConfig()
+            st.rerun()
+
+        st.markdown("---")
+        st.markdown("### Estado del Análisis")
+
+        executed = "results_df" in st.session_state
+        if executed:
+            n_designed = st.session_state.get("designed_count", 0)
+            file_name = st.session_state.get("executed_file", "Genomic Dataset")
+            st.markdown(f"""
+            <div class="metric-box" style="margin-bottom: 12px;">
+                <div class="metric-label">Archivo Procesado</div>
+                <div style="font-weight: 600; font-size: 0.85rem; word-break: break-all; margin-top: 4px;">{file_name}</div>
+                <div class="metric-label" style="margin-top: 8px;">Partidores Validados</div>
+                <div class="metric-value" style="font-size: 1.25rem; color: #059669;">{n_designed:,}</div>
+            </div>
+            """, unsafe_allow_html=True)
+        else:
+            st.caption("Estado: Listo para configurar y ejecutar.")
+
+        if st.button("Reiniciar Sesión / Nuevo Análisis", use_container_width=True):
+            for k in ["results_df", "sequences_store", "metrics", "records_count", "designed_count", "executed_file"]:
+                st.session_state.pop(k, None)
+            st.rerun()
+
+    # -------------------------------------------------------------------------
+    # MAIN WORKFLOW TABS: 5 Logical Step Windows
+    # -------------------------------------------------------------------------
+    tab_input, tab_params, tab_exec, tab_viewer, tab_export = st.tabs([
+        "1. Entrada & Preprocesado",
+        "2. Criterios de Marcadores & Partidores",
+        "3. Ejecución & Métricas",
+        "4. Visor Genómico (IGV.js)",
+        "5. Catálogo & Exportación"
+    ])
+
+    # -------------------------------------------------------------------------
+    # TAB 1: Entrada Genómica & Preprocesamiento Contextual
+    # -------------------------------------------------------------------------
+    with tab_input:
+        st.markdown("#### Paso 1: Selección de Archivo y Preprocesamiento Genómico")
+        st.caption("Seleccione el origen de las secuencias. Si se detectan lecturas crudas, se desplegarán las opciones de control de calidad y desreplicación:")
+
+        dataset_options = [
+            "Nothofagus obliqua - Roche 454 Pool-Seq (data/SRR1037140.fastq.gz)",
+            "Nothofagus pumilio - Lecturas genómicas crudas (data/N_pumilio.fastq.gz)",
+            "Flora Nativa de Chile Benchmark (examples/sample_plant_genes.fasta)",
+            "Subir archivo personalizado (.fastq, .fastq.gz, .fasta, .fa, .fna)"
+        ]
+
+        selected_dataset = st.selectbox(
+            "Archivo Genómico de Entrada:",
+            dataset_options,
             index=0
         )
 
-        preset_key_map = {
-            "Roche 454 (e.g. Nothofagus Pool-Seq)": "roche-454",
-            "Illumina (Short Reads / RNA-seq)": "illumina",
-            "PacBio HiFi (Long Reads)": "pacbio-hifi",
-            "De Novo Assembly (FASTA)": "assembly",
-            "Custom Profile": "custom"
-        }
-        active_preset = preset_key_map[preset_choice]
-
-        if active_preset != "custom":
-            cfg = PipelineConfig.from_preset(active_preset)
+        selected_file_path = None
+        if "SRR1037140" in selected_dataset:
+            selected_file_path = ROOT_DIR / "data" / "SRR1037140.fastq.gz"
+        elif "N_pumilio" in selected_dataset:
+            selected_file_path = ROOT_DIR / "data" / "N_pumilio.fastq.gz"
+        elif "Flora Nativa" in selected_dataset:
+            selected_file_path = ROOT_DIR / "examples" / "sample_plant_genes.fasta"
         else:
-            cfg = PipelineConfig()
-
-        st.markdown("---")
-        st.markdown("### Intermediate Stages")
-
-        with st.expander("Quality Control & Filtering", expanded=False):
-            cfg.qc.enabled = st.checkbox("Enable Quality Control", value=cfg.qc.enabled)
-            cfg.qc.min_length = st.number_input("Minimum Sequence Length (bp)", value=cfg.qc.min_length, min_value=50, step=10)
-            cfg.qc.min_quality = st.slider("Minimum Mean Phred Quality", min_value=10.0, max_value=35.0, value=float(cfg.qc.min_quality), step=1.0)
-            cfg.qc.quality_offset = st.selectbox("Quality Scale Offset", [33, 64], index=0 if cfg.qc.quality_offset == 33 else 1)
-
-        with st.expander("Deduplication & Assembly", expanded=False):
-            cfg.deduplication.enabled = st.checkbox("Enable Clonal Deduplication", value=cfg.deduplication.enabled)
-            cfg.deduplication.prefix_length = st.slider("5' Prefix Window (bp)", min_value=30, max_value=120, value=cfg.deduplication.prefix_length, step=5)
-            cfg.deduplication.cluster_identity = st.slider("Clustering Identity Threshold", min_value=0.85, max_value=1.0, value=float(cfg.deduplication.cluster_identity), step=0.01)
-
-        with st.expander("Microsatellite Detection Thresholds", expanded=False):
-            st.caption("Minimum tandem repeat units required:")
-            r_di = st.number_input("Dinucleotides", min_value=4, value=cfg.ssr.min_repeats.get(2, 6))
-            r_tri = st.number_input("Trinucleotides", min_value=3, value=cfg.ssr.min_repeats.get(3, 5))
-            r_tetra = st.number_input("Tetranucleotides", min_value=3, value=cfg.ssr.min_repeats.get(4, 4))
-            r_penta = st.number_input("Pentanucleotides", min_value=3, value=cfg.ssr.min_repeats.get(5, 3))
-            r_hexa = st.number_input("Hexanucleotides", min_value=2, value=cfg.ssr.min_repeats.get(6, 3))
-            cfg.ssr.min_repeats = {2: r_di, 3: r_tri, 4: r_tetra, 5: r_penta, 6: r_hexa}
-            cfg.ssr.flank_size = st.slider("Flanking Window Length (bp)", 50, 300, cfg.ssr.flank_size, 25)
-
-        with st.expander("Primer3 Thermodynamic Parameters", expanded=False):
-            col_tm1, col_tm2 = st.columns(2)
-            cfg.primer.min_tm = col_tm1.number_input("Min Tm (°C)", value=cfg.primer.min_tm, step=0.5)
-            cfg.primer.max_tm = col_tm2.number_input("Max Tm (°C)", value=cfg.primer.max_tm, step=0.5)
-            cfg.primer.opt_tm = st.slider("Optimal Tm (°C)", min_value=55.0, max_value=65.0, value=float(cfg.primer.opt_tm), step=0.5)
-            
-            col_gc1, col_gc2 = st.columns(2)
-            cfg.primer.min_gc = col_gc1.number_input("Min GC (%)", value=cfg.primer.min_gc, step=5.0)
-            cfg.primer.max_gc = col_gc2.number_input("Max GC (%)", value=cfg.primer.max_gc, step=5.0)
-            
-            col_sz1, col_sz2 = st.columns(2)
-            cfg.primer.min_size = col_sz1.number_input("Min Size (nt)", value=cfg.primer.min_size, step=1)
-            cfg.primer.max_size = col_sz2.number_input("Max Size (nt)", value=cfg.primer.max_size, step=1)
-
-    # -------------------------------------------------------------------------
-    # MAIN AREA: Input Source & Execution Controls
-    # -------------------------------------------------------------------------
-    st.markdown("### Genomic Input Selection")
-
-    input_mode = st.radio(
-        "Select Dataset Source:",
-        [
-            "Nothofagus obliqua 454 reads (data/SRR1037140.fastq.gz)",
-            "Native Flora Benchmark Contigs: Quillaja, Araucaria, Nothofagus, Ugni (examples/sample_plant_genes.fasta)",
-            "Upload Custom Sequencing File (.fastq, .fastq.gz, .fasta, .fna)"
-        ],
-        index=0
-    )
-
-    selected_file_path = None
-    temp_file = None
-
-    if "Nothofagus obliqua" in input_mode:
-        selected_file_path = ROOT_DIR / "data" / "SRR1037140.fastq.gz"
-        if not selected_file_path.exists():
-            st.error(f"Input file not found: {selected_file_path}")
-    elif "Native Flora Benchmark" in input_mode:
-        selected_file_path = ROOT_DIR / "examples" / "sample_plant_genes.fasta"
-    else:
-        uploaded_file = st.file_uploader("Upload Sequence File", type=["fasta", "fa", "fna", "fastq", "fq", "gz"])
-        if uploaded_file is not None:
-            temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=f"_{uploaded_file.name}")
-            temp_file.write(uploaded_file.read())
-            temp_file.flush()
-            selected_file_path = Path(temp_file.name)
-
-    col_cap1, col_cap2 = st.columns([3, 2])
-    with col_cap1:
-        max_reads_val = st.select_slider(
-            "Read Subsample Cap (Rapid Analysis)",
-            options=[1000, 2500, 5000, 10000, 25000, "All Available Reads"],
-            value=5000
-        )
-        cfg.max_reads = None if max_reads_val == "All Available Reads" else int(max_reads_val)
-    with col_cap2:
-        st.write("")
-        st.write("")
-        run_btn = st.button("Execute Pipeline", use_container_width=True)
-
-    # -------------------------------------------------------------------------
-    # PIPELINE EXECUTION
-    # -------------------------------------------------------------------------
-    if run_btn and selected_file_path:
-        with st.spinner("Processing genomic sequences..."):
-            progress_bar = st.progress(10)
-
-            preprocessor = ReadPreprocessor.from_config(cfg)
-            processed_dir = ROOT_DIR / "data" / "processed"
-            
-            target_fasta, detected_mode, metrics = preprocessor.prepare_input(
-                input_file=selected_file_path,
-                output_dir=processed_dir,
-                force_mode="auto",
-                max_reads=cfg.max_reads,
-                assembly_config=cfg.assembly
+            uploaded = st.file_uploader(
+                "Subir archivo genómico (.fastq, .fastq.gz, .fasta, .fna):",
+                type=["fastq", "fq", "gz", "fasta", "fa", "fna"]
             )
-            progress_bar.progress(40)
+            if uploaded is not None:
+                tmp = tempfile.NamedTemporaryFile(delete=False, suffix=f"_{uploaded.name}")
+                tmp.write(uploaded.read())
+                tmp.flush()
+                selected_file_path = Path(tmp.name)
 
-            # Sequence Parsing & Mining
-            records = list(SeqIO.parse(str(target_fasta), "fasta"))
-            detector = SSRDetector(min_repeats=cfg.ssr.min_repeats, flank_size=cfg.ssr.flank_size)
-            designer = PrimerDesigner.from_config(cfg.primer)
+        if selected_file_path and selected_file_path.exists():
+            file_size_mb = selected_file_path.stat().st_size / (1024 * 1024)
+            path_str_lower = str(selected_file_path).lower()
+            is_fastq = any(path_str_lower.endswith(ext) for ext in [".fastq", ".fq", ".fastq.gz", ".fq.gz"])
 
-            combined_results = []
-            sequences_store = {}
-            designed_count = 0
+            badge_html = '<span class="badge-fastq">Lecturas Crudas (FASTQ)</span>' if is_fastq else '<span class="badge-fasta">Ensamble de Novo (FASTA)</span>'
 
-            for rec in records:
-                seq_str = str(rec.seq).upper()
-                sequences_store[rec.id] = seq_str
-                markers = detector.find_markers_in_sequence(rec)
+            st.markdown(f"""
+            <div class="section-card">
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <div>
+                        <strong>Archivo activo:</strong> <code>{selected_file_path.name}</code>
+                        <span style="margin-left: 10px; color: #64748b; font-size: 0.85rem;">({file_size_mb:.2f} MB)</span>
+                    </div>
+                    <div>{badge_html}</div>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
 
-                for m in markers:
-                    row_data = m.to_dict()
-                    p_pair = designer.design_for_marker(seq_str, m.start, m.length)
-                    if p_pair:
-                        designed_count += 1
-                        row_data.update(p_pair.to_dict())
-                        row_data["primer_status"] = "DESIGNED"
-                    else:
-                        row_data["primer_status"] = "FAILED_CONSTRAINTS"
-                        for k in ["primer_forward_seq", "primer_reverse_seq", "primer_forward_tm",
-                                  "primer_reverse_tm", "primer_forward_gc_percent", "primer_reverse_gc_percent", "amplicon_size_bp"]:
-                            row_data[k] = None
-                    combined_results.append(row_data)
+            if is_fastq:
+                st.markdown("""
+                <div class="info-callout">
+                    <strong>Preprocesamiento para Lecturas Crudas:</strong> En secuenciación masiva (como 454 o Illumina), el filtrado Phred y la desreplicación clonal (reducción de artefactos de emulsión/PCR) eliminan ruido técnico antes de buscar microsatélites.
+                </div>
+                """, unsafe_allow_html=True)
 
-            progress_bar.progress(100)
-            st.session_state["results_df"] = pd.DataFrame(combined_results)
-            st.session_state["sequences_store"] = sequences_store
-            st.session_state["metrics"] = metrics
-            st.session_state["records_count"] = len(records)
-            st.session_state["designed_count"] = designed_count
-            st.success("Pipeline execution completed.")
+                col_sub1, col_sub2 = st.columns([3, 1])
+                with col_sub1:
+                    max_reads_options = [1000, 2500, 5000, 10000, 25000, "Todas las lecturas disponibles"]
+                    current_sub = cfg.max_reads if cfg.max_reads in [1000, 2500, 5000, 10000, 25000] else 5000
+                    max_reads_choice = st.select_slider(
+                        "Límite de lecturas a procesar (Submuestreo para análisis ágil):",
+                        options=max_reads_options,
+                        value=current_sub
+                    )
+                    cfg.max_reads = None if max_reads_choice == "Todas las lecturas disponibles" else int(max_reads_choice)
+                with col_sub2:
+                    st.caption("Submuestreo recomendado para iterar rápidamente en datasets voluminosos.")
+
+                col_qc, col_dedup = st.columns(2)
+                with col_qc:
+                    st.markdown("##### Control de Calidad (QC)")
+                    cfg.qc.enabled = st.checkbox("Habilitar Control de Calidad", value=cfg.qc.enabled, key="qc_en")
+                    cfg.qc.min_length = st.number_input("Longitud mínima de lectura (bp)", value=cfg.qc.min_length, min_value=30, step=10, key="qc_len")
+                    cfg.qc.min_quality = st.slider("Calidad media Phred mínima (Q)", min_value=10.0, max_value=35.0, value=float(cfg.qc.min_quality), step=1.0, key="qc_q")
+                    cfg.qc.quality_offset = st.selectbox("Escala Phred Offset", [33, 64], index=0 if cfg.qc.quality_offset == 33 else 1, key="qc_off")
+
+                with col_dedup:
+                    st.markdown("##### Desreplicación Clonal & Clustering")
+                    cfg.deduplication.enabled = st.checkbox("Habilitar Desreplicación Clonal", value=cfg.deduplication.enabled, key="dedup_en")
+                    cfg.deduplication.prefix_length = st.slider("Ventana de prefijo 5' (bp)", min_value=30, max_value=120, value=cfg.deduplication.prefix_length, step=5, key="dedup_pref")
+                    cfg.deduplication.cluster_identity = st.slider("Umbral de identidad de clustering", min_value=0.85, max_value=1.0, value=float(cfg.deduplication.cluster_identity), step=0.01, key="dedup_id")
+            else:
+                st.markdown("""
+                <div class="info-callout">
+                    <strong>Datos de Ensamble Detectados:</strong> El archivo contiene cóntigos o secuencias ensambladas (FASTA). Las etapas de control de calidad Phred y desreplicación clonal de lecturas individuales se omiten automáticamente.
+                </div>
+                """, unsafe_allow_html=True)
+                cfg.assembly.min_contig_length = st.number_input(
+                    "Longitud mínima de cóntigo (bp):",
+                    value=cfg.assembly.min_contig_length,
+                    min_value=100,
+                    step=50
+                )
+
+            st.write("")
+            col_b1, col_b2 = st.columns([3, 1])
+            with col_b1:
+                st.caption("Puede continuar al Paso 2 para afinar los umbrales de diseño o ejecutar directamente:")
+            with col_b2:
+                if st.button("Ejecutar Pipeline", key="run_p1", use_container_width=True):
+                    run_pipeline_execution(cfg, selected_file_path)
+                    st.rerun()
+        else:
+            st.warning("Seleccione o cargue un archivo genómico válido para continuar.")
 
     # -------------------------------------------------------------------------
-    # RESULTS DASHBOARD
+    # TAB 2: Criterios de Marcadores & Partidores
     # -------------------------------------------------------------------------
-    if "results_df" in st.session_state:
-        df = st.session_state["results_df"]
-        seq_store = st.session_state.get("sequences_store", {})
-        metrics = st.session_state["metrics"]
-        records_count = st.session_state["records_count"]
-        designed_count = st.session_state["designed_count"]
+    with tab_params:
+        st.markdown("#### Paso 2: Criterios de Selección de Marcadores & Partidores")
+        st.caption("Ajuste los umbrales de detección de microsatélites y las restricciones termodinámicas de Primer3:")
+
+        st.markdown("##### 1. Detección de Microsatélites (SSRs)")
+        st.caption("Mínimo de unidades de repetición requeridas por clase de motivo:")
+        c_di, c_tri, c_tetra, c_penta, c_hexa = st.columns(5)
+        r_di = c_di.number_input("Dinucleótidos", min_value=4, value=cfg.ssr.min_repeats.get(2, 6), key="p_di")
+        r_tri = c_tri.number_input("Trinucleótidos", min_value=3, value=cfg.ssr.min_repeats.get(3, 5), key="p_tri")
+        r_tetra = c_tetra.number_input("Tetranucleótidos", min_value=3, value=cfg.ssr.min_repeats.get(4, 4), key="p_tetra")
+        r_penta = c_penta.number_input("Pentanucleótidos", min_value=3, value=cfg.ssr.min_repeats.get(5, 3), key="p_penta")
+        r_hexa = c_hexa.number_input("Hexanucleótidos", min_value=2, value=cfg.ssr.min_repeats.get(6, 3), key="p_hexa")
+        cfg.ssr.min_repeats = {2: r_di, 3: r_tri, 4: r_tetra, 5: r_penta, 6: r_hexa}
+
+        cfg.ssr.flank_size = st.slider("Longitud de ventana de flanco (bp)", 50, 300, cfg.ssr.flank_size, 25, key="p_flank")
 
         st.markdown("---")
-        st.markdown("### Execution Results")
+        st.markdown("##### 2. Parámetros Termodinámicos Primer3")
+        col_t1, col_t2 = st.columns(2)
+        with col_t1:
+            st.markdown("<strong>Temperaturas de Fusión (Tm)</strong>", unsafe_allow_html=True)
+            col_tm1, col_tm2 = st.columns(2)
+            cfg.primer.min_tm = col_tm1.number_input("Tm Mínima (°C)", value=cfg.primer.min_tm, step=0.5, key="p_mintm")
+            cfg.primer.max_tm = col_tm2.number_input("Tm Máxima (°C)", value=cfg.primer.max_tm, step=0.5, key="p_maxtm")
+            cfg.primer.opt_tm = st.slider("Tm Óptima (°C)", min_value=50.0, max_value=68.0, value=float(cfg.primer.opt_tm), step=0.5, key="p_opttm")
 
-        qc = metrics.get("qc", {})
-        total_in = qc.get("total_reads", records_count)
-        passed = qc.get("passed_reads", records_count)
-        clust = metrics.get("clustering", {})
-        dedup_red = clust.get("redundancy_reduced", 0)
+            st.markdown("<strong>Rango de Tamaño de Amplicón (bp)</strong>", unsafe_allow_html=True)
+            col_pr1, col_pr2 = st.columns(2)
+            p_range = cfg.primer.product_size_ranges[0] if cfg.primer.product_size_ranges else (100, 300)
+            p_min = col_pr1.number_input("Amplicón Mínimo (bp)", value=p_range[0], step=10, key="p_ampmin")
+            p_max = col_pr2.number_input("Amplicón Máximo (bp)", value=p_range[1], step=10, key="p_ampmax")
+            cfg.primer.product_size_ranges = [(int(p_min), int(p_max))]
 
-        c1, c2, c3, c4, c5 = st.columns(5)
-        c1.markdown(f"<div class='metric-box'><div class='metric-label'>Total Inputs</div><div class='metric-value'>{total_in:,}</div></div>", unsafe_allow_html=True)
-        c2.markdown(f"<div class='metric-box'><div class='metric-label'>QC Passed</div><div class='metric-value'>{passed:,}</div></div>", unsafe_allow_html=True)
-        c3.markdown(f"<div class='metric-box'><div class='metric-label'>Duplicates Removed</div><div class='metric-value'>{dedup_red:,}</div></div>", unsafe_allow_html=True)
-        c4.markdown(f"<div class='metric-box'><div class='metric-label'>SSRs Detected</div><div class='metric-value'>{len(df):,}</div></div>", unsafe_allow_html=True)
-        c5.markdown(f"<div class='metric-box'><div class='metric-label'>Primers Designed</div><div class='metric-value'>{designed_count:,}</div></div>", unsafe_allow_html=True)
+        with col_t2:
+            st.markdown("<strong>Composición Guanina-Citosina (GC%)</strong>", unsafe_allow_html=True)
+            col_gc1, col_gc2 = st.columns(2)
+            cfg.primer.min_gc = col_gc1.number_input("GC Mínimo (%)", value=cfg.primer.min_gc, step=5.0, key="p_mingc")
+            cfg.primer.max_gc = col_gc2.number_input("GC Máximo (%)", value=cfg.primer.max_gc, step=5.0, key="p_maxgc")
+
+            st.markdown("<strong>Longitud de los Partidores (nt)</strong>", unsafe_allow_html=True)
+            col_sz1, col_sz2, col_sz3 = st.columns(3)
+            cfg.primer.min_size = col_sz1.number_input("Mín nt", value=cfg.primer.min_size, step=1, key="p_minsz")
+            cfg.primer.opt_size = col_sz2.number_input("Ópt nt", value=cfg.primer.opt_size, step=1, key="p_optsz")
+            cfg.primer.max_size = col_sz3.number_input("Máx nt", value=cfg.primer.max_size, step=1, key="p_maxsz")
 
         st.write("")
+        col_b3, col_b4 = st.columns([3, 1])
+        with col_b3:
+            st.caption("Criterios configurados. Puede proceder a la ejecución:")
+        with col_b4:
+            if st.button("Ejecutar Pipeline", key="run_p2", use_container_width=True):
+                if selected_file_path and selected_file_path.exists():
+                    run_pipeline_execution(cfg, selected_file_path)
+                    st.rerun()
+                else:
+                    st.error("Seleccione un archivo válido en el Paso 1.")
 
-        tab_browser, tab_table, tab_stats, tab_config = st.tabs([
-            "Interactive IGV Genome Browser",
-            "Designed Primers Summary",
-            "Marker Distributions",
-            "Pipeline Configuration"
-        ])
+    # -------------------------------------------------------------------------
+    # TAB 3: Ejecución & Resumen de Métricas
+    # -------------------------------------------------------------------------
+    with tab_exec:
+        st.markdown("#### Paso 3: Ejecución & Resumen de Métricas")
+        st.caption("Monitoree la ejecución del pipeline y evalúe las tasas de retención de QC, desreplicación y eficiencia de diseño:")
 
-        with tab_browser:
-            st.markdown("#### Interactive Locus Viewer (Powered by IGV.js)")
-            st.caption("Explore single-base nucleotide resolution, SSR repeat boundaries, and Forward/Reverse primer binding loci with dynamic zooming and panning:")
+        col_exec_btn, col_exec_info = st.columns([2, 3])
+        with col_exec_btn:
+            if st.button("Iniciar Ejecución del Pipeline", key="run_p3", use_container_width=True):
+                if selected_file_path and selected_file_path.exists():
+                    run_pipeline_execution(cfg, selected_file_path)
+                    st.rerun()
+                else:
+                    st.error("Seleccione un archivo válido en el Paso 1.")
 
+        with col_exec_info:
+            target_name = selected_file_path.name if (selected_file_path and selected_file_path.exists()) else "No seleccionado"
+            st.caption(f"Archivo diana: {target_name} | Preset: {st.session_state['active_preset_name']}")
+
+        if "results_df" in st.session_state:
+            df = st.session_state["results_df"]
+            metrics = st.session_state.get("metrics", {})
+            records_count = st.session_state.get("records_count", 0)
+            designed_count = st.session_state.get("designed_count", 0)
+
+            qc = metrics.get("qc", {})
+            total_in = qc.get("total_reads", records_count)
+            passed = qc.get("passed_reads", records_count)
+            clust = metrics.get("clustering", {})
+            dedup_red = clust.get("redundancy_reduced", 0)
+
+            st.markdown("---")
+            st.markdown("##### Métricas Globales de Rendimiento")
+
+            c1, c2, c3, c4, c5 = st.columns(5)
+            c1.markdown(f"<div class='metric-box'><div class='metric-label'>Total Entradas</div><div class='metric-value'>{total_in:,}</div></div>", unsafe_allow_html=True)
+            c2.markdown(f"<div class='metric-box'><div class='metric-label'>QC Aprobadas</div><div class='metric-value'>{passed:,}</div></div>", unsafe_allow_html=True)
+            c3.markdown(f"<div class='metric-box'><div class='metric-label'>Duplicados Eliminados</div><div class='metric-value'>{dedup_red:,}</div></div>", unsafe_allow_html=True)
+            c4.markdown(f"<div class='metric-box'><div class='metric-label'>SSRs Detectados</div><div class='metric-value'>{len(df):,}</div></div>", unsafe_allow_html=True)
+            c5.markdown(f"<div class='metric-box'><div class='metric-label'>Partidores Diseñados</div><div class='metric-value' style='color: #059669;'>{designed_count:,}</div></div>", unsafe_allow_html=True)
+
+            st.write("")
+            st.markdown("""
+            <div class="info-callout">
+                <strong>Análisis completado:</strong> Pase a la ventana <strong>Paso 4: Visor Genómico (IGV.js)</strong> para inspeccionar interactivamente los microsatélites y partidores a resolución nucleotídica, o a <strong>Paso 5: Catálogo & Exportación</strong> para descargar los resultados.
+            </div>
+            """, unsafe_allow_html=True)
+
+            st.markdown("##### Distribución de Tipos de Microsatélites")
+            if not df.empty:
+                counts = df["motif_type"].value_counts()
+                st.bar_chart(counts)
+        else:
+            st.info("Presione 'Iniciar Ejecución del Pipeline' para procesar el archivo seleccionado.")
+
+    # -------------------------------------------------------------------------
+    # TAB 4: Visor Genómico Interactivo (IGV.js)
+    # -------------------------------------------------------------------------
+    with tab_viewer:
+        st.markdown("#### Paso 4: Visor Genómico Interactivo (IGV.js) & Síntesis de Oligonucleótidos")
+        st.caption("Inspección interactiva a nivel de nucleótido de los cóntigos, tractos repetidos de microsatélites y sitios de anillamiento de partidores:")
+
+        if "results_df" in st.session_state:
+            df = st.session_state["results_df"]
+            seq_store = st.session_state.get("sequences_store", {})
             designed_only = df[df["primer_status"] == "DESIGNED"]
+
             if not designed_only.empty:
                 selected_idx = st.selectbox(
-                    "Select Locus for Interactive Inspection:",
+                    "Seleccionar Locus para Inspección Interactiva:",
                     options=designed_only.index,
-                    format_func=lambda i: f"Locus: {designed_only.loc[i, 'sequence_id']} | Motif: ({designed_only.loc[i, 'motif']}){designed_only.loc[i, 'repeats']} | Amplicon: {int(designed_only.loc[i, 'amplicon_size_bp'])} bp"
+                    format_func=lambda i: f"Locus: {designed_only.loc[i, 'sequence_id']} | Motivo: ({designed_only.loc[i, 'motif']}){designed_only.loc[i, 'repeats']} | Amplicón: {int(designed_only.loc[i, 'amplicon_size_bp'])} bp"
                 )
 
                 row = designed_only.loc[selected_idx]
                 locus_seq = seq_store.get(row["sequence_id"], "")
 
-                # Render IGV.js component
+                # Render IGV.js
                 render_igv_viewer(
                     locus_id=str(row["sequence_id"]),
                     sequence=locus_seq,
@@ -639,7 +859,7 @@ def main():
                 )
 
                 # Oligo Synthesis Specification Panel
-                st.markdown("#### Oligonucleotide Synthesis Specifications")
+                st.markdown("##### Especificaciones de Síntesis de Oligonucleótidos")
                 fwd_seq = str(row["primer_forward_seq"])
                 rev_seq = str(row["primer_reverse_seq"])
                 fwd_tm = float(row["primer_forward_tm"])
@@ -717,15 +937,28 @@ def main():
                 </div>
                 """, unsafe_allow_html=True)
             else:
-                st.info("No primers met the current thermodynamic constraints.")
+                st.info("Ningún microsatélite cumplió con las restricciones termodinámicas actuales de Primer3.")
+        else:
+            st.info("No hay resultados disponibles para visualizar. Configure los datos en el Paso 1 y ejecute el pipeline en el Paso 3.")
 
-        with tab_table:
-            st.markdown("#### Designed Primers Master Table")
-            filter_mode = st.radio("Display Filter:", ["All Detected Markers", "Only Validated Primers (DESIGNED)", "Only Rejected Loci"], horizontal=True)
+    # -------------------------------------------------------------------------
+    # TAB 5: Catálogo Maestro & Exportación
+    # -------------------------------------------------------------------------
+    with tab_export:
+        st.markdown("#### Paso 5: Catálogo Maestro de Marcadores & Exportación")
+        st.caption("Filtre la tabla maestra de oligonucleótidos y descargue los resultados en formatos tabulares o perfiles reproducibles:")
 
-            if filter_mode == "Only Validated Primers (DESIGNED)":
+        if "results_df" in st.session_state:
+            df = st.session_state["results_df"]
+            filter_mode = st.radio(
+                "Filtro de visualización:",
+                ["Todos los Marcadores", "Solo Partidores Validados (DESIGNED)", "Solo Loci Rechazados (Restricciones No Cumplidas)"],
+                horizontal=True
+            )
+
+            if filter_mode == "Solo Partidores Validados (DESIGNED)":
                 view_df = df[df["primer_status"] == "DESIGNED"]
-            elif filter_mode == "Only Rejected Loci":
+            elif filter_mode == "Solo Loci Rechazados (Restricciones No Cumplidas)":
                 view_df = df[df["primer_status"] != "DESIGNED"]
             else:
                 view_df = df
@@ -737,28 +970,23 @@ def main():
                     "amplicon_size_bp", "primer_status"
                 ]],
                 use_container_width=True,
-                height=380
+                height=420
             )
 
             tsv_export = view_df.to_csv(sep="\t", index=False)
             csv_export = view_df.to_csv(index=False)
-            e_col1, e_col2 = st.columns(2)
-            e_col1.download_button("Export TSV Table", tsv_export, "wildprimer_markers.tsv", "text/tab-separated-values")
-            e_col2.download_button("Export CSV Table", csv_export, "wildprimer_markers.csv", "text/csv")
+            e_col1, e_col2, e_col3 = st.columns(3)
+            e_col1.download_button("Exportar Tabla TSV", tsv_export, "wildprimer_markers.tsv", "text/tab-separated-values", use_container_width=True)
+            e_col2.download_button("Exportar Tabla CSV", csv_export, "wildprimer_markers.csv", "text/csv", use_container_width=True)
 
-        with tab_stats:
-            st.markdown("#### Molecular Marker Classification")
-            if not df.empty:
-                counts = df["motif_type"].value_counts()
-                st.bar_chart(counts)
-
-        with tab_config:
-            st.markdown("#### Active Configuration Profile")
-            st.caption("Exact parameters used for this run:")
             from dataclasses import asdict
             yaml_dump = yaml.dump(asdict(cfg), default_flow_style=False, sort_keys=False)
-            st.code(yaml_dump, language="yaml")
-            st.download_button("Export YAML Configuration", yaml_dump, "wildprimer_run_config.yaml", "text/yaml")
+            e_col3.download_button("Exportar Configuración YAML", yaml_dump, "wildprimer_run_config.yaml", "text/yaml", use_container_width=True)
+
+            with st.expander("Inspeccionar Configuración YAML Activa", expanded=False):
+                st.code(yaml_dump, language="yaml")
+        else:
+            st.info("El catálogo de marcadores estará disponible una vez ejecutado el pipeline.")
 
 
 if __name__ == "__main__":
