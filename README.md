@@ -173,6 +173,14 @@ python src/pipeline.py --input examples/sample_454_nothofagus_reads.fastq \
                        --output-table results/tables/nothofagus_454_primers.tsv
 ```
 
+### 3. Launching the Interactive Web Application (WildPrimer Studio)
+
+For an intuitive graphical user interface featuring real-time parameter tuning, dynamic tables, and interactive IGV-style locus & primer maps:
+
+```bash
+streamlit run app.py
+```
+
 ### CLI Parameters
 
 | Flag | Long Flag | Default | Description |
