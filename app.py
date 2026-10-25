@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 import tempfile
 import json
+import base64
 import streamlit as st
 import streamlit.components.v1 as components
 import pandas as pd
@@ -40,11 +41,10 @@ st.markdown("""
 
     html, body, [class*="css"] {
         font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
-        color: #1e293b;
     }
 
     .platform-header {
-        border-bottom: 1px solid #e2e8f0;
+        border-bottom: 1px solid rgba(148, 163, 184, 0.25);
         padding-bottom: 12px;
         margin-bottom: 20px;
     }
@@ -52,7 +52,6 @@ st.markdown("""
     .platform-title {
         font-size: 1.75rem;
         font-weight: 700;
-        color: #0f172a;
         letter-spacing: -0.025em;
         margin: 0;
     }
@@ -65,8 +64,8 @@ st.markdown("""
     }
 
     .metric-box {
-        background-color: #f8fafc;
-        border: 1px solid #e2e8f0;
+        background-color: var(--secondary-background-color, #f8fafc);
+        border: 1px solid rgba(148, 163, 184, 0.25);
         border-radius: 6px;
         padding: 12px 16px;
     }
@@ -82,7 +81,6 @@ st.markdown("""
     .metric-value {
         font-size: 1.5rem;
         font-weight: 700;
-        color: #0f172a;
         margin-top: 2px;
     }
 
@@ -104,15 +102,123 @@ st.markdown("""
     .mono-seq {
         font-family: 'Roboto Mono', monospace;
         font-size: 0.85rem;
-        background-color: #f1f5f9;
-        padding: 4px 8px;
+        background-color: var(--background-color, #f1f5f9);
+        border: 1px solid rgba(148, 163, 184, 0.25);
+        padding: 6px 10px;
         border-radius: 4px;
-        color: #0f172a;
         word-break: break-all;
     }
 
+    .oligo-card {
+        background-color: var(--secondary-background-color, #f8fafc);
+        border: 1px solid rgba(148, 163, 184, 0.3);
+        border-radius: 8px;
+        padding: 18px;
+        margin-bottom: 14px;
+    }
+
+    .oligo-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 12px;
+    }
+
+    .oligo-title {
+        font-size: 0.95rem;
+        font-weight: 700;
+        color: var(--text-color, #0f172a);
+    }
+
+    .oligo-badge-fwd {
+        background-color: rgba(5, 150, 105, 0.15);
+        color: #059669;
+        font-size: 0.75rem;
+        font-weight: 600;
+        padding: 3px 10px;
+        border-radius: 9999px;
+        border: 1px solid rgba(5, 150, 105, 0.3);
+    }
+
+    .oligo-badge-rev {
+        background-color: rgba(220, 38, 38, 0.15);
+        color: #dc2626;
+        font-size: 0.75rem;
+        font-weight: 600;
+        padding: 3px 10px;
+        border-radius: 9999px;
+        border: 1px solid rgba(220, 38, 38, 0.3);
+    }
+
+    .oligo-seq-box {
+        font-family: 'Roboto Mono', monospace;
+        font-size: 0.92rem;
+        background-color: var(--background-color, #ffffff);
+        border: 1px solid rgba(148, 163, 184, 0.35);
+        border-radius: 6px;
+        padding: 10px 14px;
+        letter-spacing: 0.05em;
+        word-break: break-all;
+        margin-bottom: 14px;
+        user-select: all;
+        color: var(--text-color, #0f172a);
+    }
+
+    .oligo-metrics-grid {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 10px;
+    }
+
+    .oligo-metric-item {
+        background-color: var(--background-color, #ffffff);
+        border: 1px solid rgba(148, 163, 184, 0.2);
+        border-radius: 6px;
+        padding: 8px 10px;
+        text-align: center;
+    }
+
+    .oligo-metric-label {
+        font-size: 0.7rem;
+        font-weight: 600;
+        color: #64748b;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+    }
+
+    .oligo-metric-val {
+        font-size: 0.95rem;
+        font-weight: 700;
+        color: var(--text-color, #0f172a);
+        margin-top: 3px;
+    }
+
+    .amplicon-summary-bar {
+        background-color: var(--secondary-background-color, #f8fafc);
+        border: 1px solid rgba(148, 163, 184, 0.3);
+        border-radius: 8px;
+        padding: 12px 18px;
+        display: flex;
+        justify-content: space-around;
+        align-items: center;
+        margin-bottom: 20px;
+        flex-wrap: wrap;
+        gap: 12px;
+    }
+
+    .amplicon-summary-item {
+        font-size: 0.85rem;
+        color: #64748b;
+    }
+
+    .amplicon-summary-val {
+        font-weight: 700;
+        color: var(--text-color, #0f172a);
+        margin-left: 6px;
+    }
+
     .stTabs [data-baseweb="tab-list"] {
-        border-bottom: 1px solid #e2e8f0;
+        border-bottom: 1px solid rgba(148, 163, 184, 0.25);
         gap: 16px;
     }
 
@@ -150,38 +256,97 @@ def render_igv_viewer(
     with real-time nucleotide sequence resolution, annotation tracks,
     and optional read alignment (BAM) support.
     """
+    if not sequence:
+        st.warning("No template sequence available for locus visualization.")
+        return
+
     seq_len = len(sequence)
     fwd_len = len(fwd_seq) if fwd_seq else 20
     rev_len = len(rev_seq) if rev_seq else 20
 
+    # Sanitize chromosome ID (remove spaces, semicolons, and colons that break IGV's locus parser)
+    clean_chr = str(locus_id).split()[0].replace(":", "_").replace(";", "_")
+
+    # Encode FASTA in base64 Data URI so NonIndexedFasta accurately reconstructs byte arrays
+    fasta_payload = f">{clean_chr}\n{sequence}\n"
+    b64_fasta = base64.b64encode(fasta_payload.encode("utf-8")).decode("ascii")
+    fasta_data_uri = f"data:application/octet-stream;base64,{b64_fasta}"
+
+    # Calculate coordinates:
+    # fwd_start is 0-based start
+    # rev_start is 0-based index of last base (Primer3 convention)
+    # rev_5p is 0-based start: rev_start - rev_len + 1
+    # rev_3p is 0-based end: rev_start + 1
+    rev_5p = max(0, rev_start - rev_len + 1)
+    rev_3p = min(seq_len, rev_start + 1)
+
+    # Dynamic viewport calculation to center on the SSR locus and amplicon
+    view_margin = 35
+    locus_start = max(1, min(fwd_start + 1, ssr_start) - view_margin)
+    locus_end = min(seq_len, max(rev_3p, ssr_end) + view_margin)
+    if locus_end <= locus_start:
+        locus_start = 1
+        locus_end = min(seq_len, 400)
+
     # Build tracks in JSON
     ssr_feature = {
-        "chr": locus_id,
+        "chr": clean_chr,
         "start": ssr_start - 1,
         "end": ssr_end,
-        "name": f"SSR {ssr_motif}",
+        "name": f"SSR ({ssr_motif})",
         "color": "#7c3aed"
     }
 
     fwd_feature = {
-        "chr": locus_id,
+        "chr": clean_chr,
         "start": fwd_start,
         "end": fwd_start + fwd_len,
-        "name": "Primer Forward",
+        "name": f"Forward Primer ({fwd_len} nt)",
         "strand": "+",
         "color": "#059669"
     }
 
     rev_feature = {
-        "chr": locus_id,
-        "start": rev_start - rev_len,
-        "end": rev_start,
-        "name": "Primer Reverse",
+        "chr": clean_chr,
+        "start": rev_5p,
+        "end": rev_3p,
+        "name": f"Reverse Primer ({rev_len} nt)",
         "strand": "-",
         "color": "#dc2626"
     }
 
-    features_json = json.dumps([ssr_feature, fwd_feature, rev_feature])
+    amplicon_feature = {
+        "chr": clean_chr,
+        "start": fwd_start,
+        "end": rev_3p,
+        "name": f"PCR Amplicon ({rev_3p - fwd_start} bp)",
+        "color": "#2563eb"
+    }
+
+    tracks = [
+        {
+            "name": "SSR Microsatellite",
+            "type": "annotation",
+            "displayMode": "EXPANDED",
+            "color": "#7c3aed",
+            "features": [ssr_feature]
+        },
+        {
+            "name": "PCR Primers",
+            "type": "annotation",
+            "displayMode": "EXPANDED",
+            "features": [fwd_feature, rev_feature]
+        },
+        {
+            "name": "PCR Amplicon",
+            "type": "annotation",
+            "displayMode": "EXPANDED",
+            "color": "#2563eb",
+            "features": [amplicon_feature]
+        }
+    ]
+
+    tracks_json = json.dumps(tracks)
 
     # Construct IGV.js HTML component
     igv_html = f"""
@@ -195,7 +360,7 @@ def render_igv_viewer(
                 margin: 0;
                 padding: 0;
                 font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-                background-color: #ffffff;
+                background-color: transparent;
             }}
             #igv-container {{
                 border: 1px solid #cbd5e1;
@@ -212,37 +377,29 @@ def render_igv_viewer(
     <body>
         <div id="igv-container"></div>
         <script>
-            var fastaContent = ">{locus_id}\\n{sequence}\\n";
-            var fastaDataUri = "data:text/plain;charset=utf-8," + encodeURIComponent(fastaContent);
-
             var options = {{
                 reference: {{
-                    id: "{locus_id}",
-                    fastaURL: fastaDataUri,
+                    id: "{clean_chr}",
+                    fastaURL: "{fasta_data_uri}",
                     indexed: false
                 }},
-                locus: "{locus_id}:1-{min(seq_len, 400)}",
-                tracks: [
-                    {{
-                        name: "Locus Annotations (SSR & Primers)",
-                        type: "annotation",
-                        format: "bed",
-                        displayMode: "EXPANDED",
-                        features: {features_json}
-                    }}
-                ]
+                locus: "{clean_chr}:{locus_start}-{locus_end}",
+                tracks: {tracks_json}
             }};
 
             var igvDiv = document.getElementById("igv-container");
             igv.createBrowser(igvDiv, options).then(function(browser) {{
                 console.log("IGV.js initialized successfully.");
+            }}).catch(function(err) {{
+                console.error("IGV initialization error:", err);
+                igvDiv.innerHTML = "<div style='padding: 16px; color: #b91c1c; font-family: sans-serif; font-size: 14px;'><strong>IGV Viewer Notice:</strong> " + err.message + "</div>";
             }});
         </script>
     </body>
     </html>
     """
 
-    components.html(igv_html, height=450, scrolling=False)
+    components.html(igv_html, height=480, scrolling=False)
 
 
 def main():
@@ -483,24 +640,82 @@ def main():
 
                 # Oligo Synthesis Specification Panel
                 st.markdown("#### Oligonucleotide Synthesis Specifications")
+                fwd_seq = str(row["primer_forward_seq"])
+                rev_seq = str(row["primer_reverse_seq"])
+                fwd_tm = float(row["primer_forward_tm"])
+                rev_tm = float(row["primer_reverse_tm"])
+                fwd_gc = float(row["primer_forward_gc_percent"])
+                rev_gc = float(row["primer_reverse_gc_percent"])
+                amp_size = int(row["amplicon_size_bp"]) if pd.notnull(row["amplicon_size_bp"]) else 0
+                tm_diff = abs(fwd_tm - rev_tm)
+
                 card_col1, card_col2 = st.columns(2)
                 with card_col1:
                     st.markdown(f"""
-                    **Forward Primer (5' &rarr; 3')**  
-                    <div class="mono-seq">{row['primer_forward_seq']}</div>  
-                    - **Length**: {len(row['primer_forward_seq'])} nt  
-                    - **Tm**: {row['primer_forward_tm']:.2f} °C  
-                    - **GC Content**: {row['primer_forward_gc_percent']:.1f} %
+                    <div class="oligo-card">
+                        <div class="oligo-header">
+                            <span class="oligo-title">Forward Primer (5' &rarr; 3')</span>
+                            <span class="oligo-badge-fwd">Sense (+)</span>
+                        </div>
+                        <div class="oligo-seq-box">{fwd_seq}</div>
+                        <div class="oligo-metrics-grid">
+                            <div class="oligo-metric-item">
+                                <div class="oligo-metric-label">Length</div>
+                                <div class="oligo-metric-val">{len(fwd_seq)} nt</div>
+                            </div>
+                            <div class="oligo-metric-item">
+                                <div class="oligo-metric-label">Melting Temp (Tm)</div>
+                                <div class="oligo-metric-val">{fwd_tm:.2f} °C</div>
+                            </div>
+                            <div class="oligo-metric-item">
+                                <div class="oligo-metric-label">GC Content</div>
+                                <div class="oligo-metric-val">{fwd_gc:.1f} %</div>
+                            </div>
+                        </div>
+                    </div>
                     """, unsafe_allow_html=True)
 
                 with card_col2:
                     st.markdown(f"""
-                    **Reverse Primer (5' &rarr; 3')**  
-                    <div class="mono-seq">{row['primer_reverse_seq']}</div>  
-                    - **Length**: {len(row['primer_reverse_seq'])} nt  
-                    - **Tm**: {row['primer_reverse_tm']:.2f} °C  
-                    - **GC Content**: {row['primer_reverse_gc_percent']:.1f} %
+                    <div class="oligo-card">
+                        <div class="oligo-header">
+                            <span class="oligo-title">Reverse Primer (5' &rarr; 3')</span>
+                            <span class="oligo-badge-rev">Antisense (&minus;)</span>
+                        </div>
+                        <div class="oligo-seq-box">{rev_seq}</div>
+                        <div class="oligo-metrics-grid">
+                            <div class="oligo-metric-item">
+                                <div class="oligo-metric-label">Length</div>
+                                <div class="oligo-metric-val">{len(rev_seq)} nt</div>
+                            </div>
+                            <div class="oligo-metric-item">
+                                <div class="oligo-metric-label">Melting Temp (Tm)</div>
+                                <div class="oligo-metric-val">{rev_tm:.2f} °C</div>
+                            </div>
+                            <div class="oligo-metric-item">
+                                <div class="oligo-metric-label">GC Content</div>
+                                <div class="oligo-metric-val">{rev_gc:.1f} %</div>
+                            </div>
+                        </div>
+                    </div>
                     """, unsafe_allow_html=True)
+
+                st.markdown(f"""
+                <div class="amplicon-summary-bar">
+                    <div class="amplicon-summary-item">
+                        <span class="amplicon-summary-label">Expected Amplicon Size:</span>
+                        <span class="amplicon-summary-val">{amp_size} bp</span>
+                    </div>
+                    <div class="amplicon-summary-item">
+                        <span class="amplicon-summary-label">Primer &Delta;Tm:</span>
+                        <span class="amplicon-summary-val">{tm_diff:.2f} °C</span>
+                    </div>
+                    <div class="amplicon-summary-item">
+                        <span class="amplicon-summary-label">Target SSR:</span>
+                        <span class="amplicon-summary-val">({row['motif']}){row['repeats']} &bull; {row['motif_type']}</span>
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
             else:
                 st.info("No primers met the current thermodynamic constraints.")
 
