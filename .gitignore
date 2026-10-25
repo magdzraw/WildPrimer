@@ -32,6 +32,8 @@
 # Whitelist small test/example datasets for demonstration purposes
 !examples/*.fasta
 !examples/*.fa
+!examples/*.fastq
+!examples/*.fq
 
 # ==========================================
 # Project Data & Results Directories

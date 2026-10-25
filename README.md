@@ -32,19 +32,37 @@ While model crops (*Arabidopsis*, rice, maize) have telomere-to-telomere referen
 
 ```mermaid
 flowchart TD
-    A["Non-Model Plant FASTA Contigs\n(De novo RNA-seq / Genome Skimming)"] --> B["Sequence Quality & Ingestion\n(Biopython SeqIO)"]
-    B --> C["De Novo SSR Marker Mining\n(Di-, Tri-, Tetra-, Penta-, Hexanucleotides)"]
-    C --> D["Flanking Sequence Extraction\n(Upstream 5' & Downstream 3' flanks)"]
-    D --> E["Thermodynamic Primer Design\n(Primer3 Thermodynamic Engine)"]
-    E --> F["Parameter Optimization\n(Tm: 58-62°C, GC: 35-65%, Amplicon: 100-300 bp)"]
-    F --> G["Lab-Ready Tabular Output\n(results/tables/designed_markers_primers.tsv)"]
-    F --> H["Marker Distribution Visuals\n(results/figures/marker_distribution.png)"]
+    subgraph Inputs ["Input Layer (Auto-Detected)"]
+        InA["De Novo Assemblies\n(FASTA contigs / transcripts)"]
+        InB["Raw Sequencing Reads\n(FASTQ: 454, PacBio, Illumina)"]
+    end
 
-    style A fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
-    style C fill:#e3f2fd,stroke:#1565c0,stroke-width:2px
-    style E fill:#fff3e0,stroke:#ef6c00,stroke-width:2px
-    style G fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px
-    style H fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px
+    subgraph Preprocessing ["Read Preprocessing (src/preprocessor.py)"]
+        QC["Quality & Length Filtering\n(Min length > 180 bp, Phred Q > 20)"]
+        Clust["Clonal Deduplication & Clustering\n(Collapses redundant multi-copy reads)"]
+    end
+
+    subgraph Mining ["Marker Mining & Primer Engine"]
+        SSR["De Novo SSR Mining\n(Di-, Tri-, Tetra-, Penta-, Hexanucleotides)"]
+        Flanks["Flanking Sequence Extraction\n(Upstream 5' & Downstream 3' flanks)"]
+        P3["Thermodynamic Primer Design\n(Primer3 Engine: Tm 58-62°C, GC 35-65%)"]
+    end
+
+    subgraph Outputs ["Lab Outputs"]
+        Table["Validated Primers Table\n(results/tables/designed_markers_primers.tsv)"]
+        Fig["Motif Distribution Chart\n(results/figures/marker_distribution.png)"]
+    end
+
+    InA --> SSR
+    InB --> QC --> Clust --> SSR
+    SSR --> Flanks --> P3
+    P3 --> Table
+    P3 --> Fig
+
+    style InA fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
+    style InB fill:#fff3e0,stroke:#e65100,stroke-width:2px
+    style Preprocessing fill:#f3e5f5,stroke:#7b1fa2,stroke-width:2px
+    style Mining fill:#e3f2fd,stroke:#1565c0,stroke-width:2px
 ```
 
 ---
@@ -54,16 +72,18 @@ flowchart TD
 ```text
 WildPrimer/
 ├── data/
-│   ├── raw/                # Large raw FASTA files / assemblies (gitignored)
-│   └── processed/          # Filtered, quality-controlled contigs (gitignored)
+│   ├── raw/                # Untransformed sequencing files (gitignored)
+│   └── processed/          # QC-filtered & deduplicated loci (gitignored)
 ├── examples/
-│   └── sample_plant_genes.fasta  # Curated benchmark contigs from native flora
+│   ├── sample_plant_genes.fasta       # Benchmark contigs from native flora
+│   └── sample_454_nothofagus_reads.fastq # Real-world 454 single-end genomic reads
 ├── notebooks/              # Interactive exploration & visual reporting
 ├── results/
 │   ├── figures/            # High-resolution plots (DPI 300)
 │   └── tables/             # Tabular marker & primer design outputs (.tsv)
 ├── src/
 │   ├── __init__.py         # Package initialization
+│   ├── preprocessor.py     # QC filtering & sequence deduplication
 │   ├── marker_detector.py  # De novo SSR identification engine
 │   ├── primer_designer.py  # Primer3 binding & thermodynamic constraints
 │   └── pipeline.py         # End-to-end CLI orchestrator
@@ -75,13 +95,18 @@ WildPrimer/
 
 ---
 
-## Benchmark Dataset
+## Supported Input Modes & Benchmark Datasets
 
-Included in [`examples/sample_plant_genes.fasta`](examples/sample_plant_genes.fasta) are curated candidate contigs representing native South American and Mediterranean-climate flora:
-- *Quillaja saponaria* (Quillay, medicinal soapbark tree - saponin pathway transcript)
-- *Araucaria araucana* (Pehuén / Monkey puzzle tree - stress-responsive contig)
-- *Nothofagus dombeyi* (Coihue - native forest tree candidate locus)
-- *Ugni molinae* (Murtilla / Chilean guava - flavonoid biosynthesis unigene)
+WildPrimer automatically recognizes and adapts to two distinct biological inputs:
+
+### Mode 1: *De Novo* Assemblies (`assembly`)
+- **Input**: Multi-FASTA files containing assembled contigs, scaffolds, or *de novo* transcriptomes (e.g. *Trinity*, *SPAdes*).
+- **Benchmark**: [`examples/sample_plant_genes.fasta`](examples/sample_plant_genes.fasta) representing South American native flora (*Quillaja saponaria*, *Araucaria araucana*, *Nothofagus dombeyi*, *Ugni molinae*).
+
+### Mode 2: Raw Sequencing Reads (`raw-reads`)
+- **Input**: FASTQ or FNA files from single-end technologies (e.g., Roche 454 pyrosequencing, PacBio HiFi, or long-read NGS).
+- **Features**: Automatically filters out low-quality/short fragments and clusters redundant clonal reads (at 95% sequence similarity) to guarantee only unique loci receive primers.
+- **Benchmark Case Study**: [`examples/sample_454_nothofagus_reads.fastq`](examples/sample_454_nothofagus_reads.fastq) modeled after real genomic 454 single-end SRA runs of *Nothofagus obliqua* (Roble pellín).
 
 ---
 
@@ -120,7 +145,7 @@ pip install -r requirements.txt
 
 ## Quickstart & Usage
 
-Run the pipeline using the native plant benchmark contigs:
+### 1. Running on De Novo Assemblies (FASTA)
 
 ```bash
 python src/pipeline.py --input examples/sample_plant_genes.fasta \
@@ -128,11 +153,23 @@ python src/pipeline.py --input examples/sample_plant_genes.fasta \
                        --output-figure results/figures/marker_distribution.png
 ```
 
+### 2. Running on Raw Reads (FASTQ / Roche 454)
+
+```bash
+python src/pipeline.py --input examples/sample_454_nothofagus_reads.fastq \
+                       --output-table results/tables/nothofagus_454_primers.tsv \
+                       --output-figure results/figures/nothofagus_454_distribution.png
+```
+
 ### CLI Parameters
 
 | Flag | Long Flag | Default | Description |
 |:---|:---|:---|:---|
-| `-i` | `--input` | `examples/sample_plant_genes.fasta` | Path to input multi-FASTA contigs file |
+| `-i` | `--input` | `examples/sample_plant_genes.fasta` | Input file path (`.fasta`, `.fastq`, `.fna`) |
+| `-t` | `--input-type` | `auto` | Data mode: `auto` (auto-detected), `assembly`, or `raw-reads` |
+| | `--min-read-length` | `180` | Minimum read length in bp for raw reads |
+| | `--min-quality` | `20.0` | Minimum mean Phred score threshold for raw reads |
+| | `--cluster-identity` | `0.95` | Sequence similarity threshold for collapsing clonal duplicate reads |
 | `-o` | `--output-table` | `results/tables/designed_markers_primers.tsv` | Destination path for TSV results table |
 | `-f` | `--output-figure` | `results/figures/marker_distribution.png` | Destination path for motif summary chart |
 | | `--flank` | `150` | Nucleotide flanking window length (bp) for primer picking |

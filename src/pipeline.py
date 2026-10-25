@@ -1,8 +1,8 @@
 """
 WildPrimer: Molecular Marker Mining & Primer Design CLI.
 
-Orchestrates de novo FASTA sequence ingestion, SSR marker mining, and flanking PCR
-primer design for native, wild, and non-model plant species.
+Orchestrates input ingestion (raw sequencing reads or de novo assemblies),
+SSR marker mining, and flanking PCR primer design for native, wild, and non-model plant species.
 Exports structured tables and summary reports ready for lab validation or publication.
 """
 
@@ -12,27 +12,34 @@ from pathlib import Path
 from typing import List, Dict
 import pandas as pd
 from Bio import SeqIO
+
 # Ensure sibling modules in src/ are always resolvable
 CURRENT_DIR = Path(__file__).resolve().parent
 if str(CURRENT_DIR) not in sys.path:
     sys.path.insert(0, str(CURRENT_DIR))
 
+from preprocessor import ReadPreprocessor
 from marker_detector import SSRDetector
 from primer_designer import PrimerDesigner
 
 
 def run_pipeline(
-    fasta_path: str,
+    input_path: str,
     output_table: str,
     output_figure: str = None,
+    input_type: str = "auto",
+    min_read_length: int = 180,
+    min_quality: float = 20.0,
+    cluster_identity: float = 0.95,
     flank_size: int = 150
 ) -> pd.DataFrame:
     """
     Execute full end-to-end marker detection and primer design pipeline for non-model plants.
+    Supports both de novo assemblies and raw reads (e.g. Roche 454, PacBio, Illumina FASTQ).
     """
-    fasta_file = Path(fasta_path)
-    if not fasta_file.exists():
-        raise FileNotFoundError(f"Input FASTA file not found: {fasta_path}")
+    input_file = Path(input_path)
+    if not input_file.exists():
+        raise FileNotFoundError(f"Input sequence file not found: {input_path}")
 
     # Handle UTF-8 encoding safely across OS terminals
     if hasattr(sys.stdout, "reconfigure"):
@@ -44,10 +51,40 @@ def run_pipeline(
     print("=" * 68)
     print("[*] WildPrimer: Marker Mining & Primer Design for Non-Model Plants")
     print("=" * 68)
-    print(f"[+] Reading input FASTA: {fasta_file.resolve()}")
+    print(f"[+] Ingesting sequence file: {input_file.resolve()}")
 
-    records = list(SeqIO.parse(str(fasta_file), "fasta"))
-    print(f"[+] Loaded {len(records)} sequence(s)/contig(s).")
+    # 1. Flexible Input Layer & Preprocessing
+    preprocessor = ReadPreprocessor(
+        min_length=min_read_length,
+        min_quality=min_quality,
+        cluster_identity=cluster_identity
+    )
+
+    processed_dir = Path("data/processed")
+    target_fasta, mode, metrics = preprocessor.prepare_input(
+        input_file=input_file,
+        output_dir=processed_dir,
+        force_mode=input_type
+    )
+
+    if mode == "raw-reads":
+        print(f"[+] Input Mode: RAW READS (FASTQ / 454 sequencing detected)")
+        qc = metrics["qc"]
+        print(f"    • Total raw reads parsed:         {qc['total_reads']}")
+        print(f"    • Discarded (length < {min_read_length} bp):    {qc['discarded_length']}")
+        print(f"    • Discarded (mean Phred Q < {min_quality}): {qc['discarded_quality']}")
+        print(f"    • Passed quality filters:         {qc['passed_reads']}")
+        
+        clust = metrics["clustering"]
+        print(f"    • Redundant clonal reads removed: {clust['redundancy_reduced']} ({clust['method']})")
+        print(f"    • Final unique loci for mining:   {clust['clustered_unique']}")
+        print(f"    • Cleaned FASTA saved to:         {target_fasta.resolve()}")
+    else:
+        print("[+] Input Mode: DE NOVO ASSEMBLY (Contigs / Transcripts)")
+
+    # 2. Sequence Ingestion for Mining
+    records = list(SeqIO.parse(str(target_fasta), "fasta"))
+    print(f"\n[+] Scanning {len(records)} sequence(s)/locus for microsatellites (SSRs)...")
 
     detector = SSRDetector(flank_size=flank_size)
     designer = PrimerDesigner()
@@ -56,7 +93,6 @@ def run_pipeline(
     total_markers_found = 0
     total_primers_designed = 0
 
-    print("[+] Scanning sequences for microsatellite (SSR) markers...")
     for rec in records:
         markers = detector.find_markers_in_sequence(rec)
         seq_str = str(rec.seq).upper()
@@ -90,19 +126,19 @@ def run_pipeline(
 
     df_results = pd.DataFrame(combined_results)
 
-    # Export results table
+    # 3. Export results table
     out_path = Path(output_table)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     df_results.to_csv(out_path, sep="\t", index=False)
     print(f"\n[OK] Results successfully exported to: {out_path.resolve()}")
 
-    # Print summary statistics
+    # 4. Print summary statistics
     print("\n" + "-" * 40)
     print("WildPrimer Execution Summary:")
     print("-" * 40)
-    print(f"Total sequences/contigs analyzed: {len(records)}")
-    print(f"Total SSR markers detected:      {total_markers_found}")
-    print(f"Primers successfully designed:   {total_primers_designed}")
+    print(f"Total sequences/loci analyzed:  {len(records)}")
+    print(f"Total SSR markers detected:     {total_markers_found}")
+    print(f"Primers successfully designed:  {total_primers_designed}")
 
     if not df_results.empty:
         motif_summary = df_results["motif_type"].value_counts().to_dict()
@@ -110,7 +146,7 @@ def run_pipeline(
         for motif, count in motif_summary.items():
             print(f"  - {motif:15s}: {count}")
 
-    # Generate visual figure if requested
+    # 5. Generate visual figure if requested
     if output_figure and not df_results.empty:
         try:
             import matplotlib.pyplot as plt
@@ -146,7 +182,31 @@ def main():
     parser.add_argument(
         "--input", "-i",
         default="examples/sample_plant_genes.fasta",
-        help="Path to input FASTA contigs (default: examples/sample_plant_genes.fasta)"
+        help="Path to input sequence file (.fasta, .fastq, .fna) (default: examples/sample_plant_genes.fasta)"
+    )
+    parser.add_argument(
+        "--input-type", "-t",
+        choices=["auto", "assembly", "raw-reads"],
+        default="auto",
+        help="Input data mode: 'auto' (detect automatically), 'assembly' (contigs), 'raw-reads' (FASTQ/454) (default: auto)"
+    )
+    parser.add_argument(
+        "--min-read-length",
+        type=int,
+        default=180,
+        help="Minimum read length in bp for raw reads (default: 180)"
+    )
+    parser.add_argument(
+        "--min-quality",
+        type=float,
+        default=20.0,
+        help="Minimum mean Phred score for raw reads (default: 20.0)"
+    )
+    parser.add_argument(
+        "--cluster-identity",
+        type=float,
+        default=0.95,
+        help="Sequence similarity identity for deduplicating raw reads (default: 0.95)"
     )
     parser.add_argument(
         "--output-table", "-o",
@@ -168,9 +228,13 @@ def main():
     args = parser.parse_args()
     try:
         run_pipeline(
-            fasta_path=args.input,
+            input_path=args.input,
             output_table=args.output_table,
             output_figure=args.output_figure,
+            input_type=args.input_type,
+            min_read_length=args.min_read_length,
+            min_quality=args.min_quality,
+            cluster_identity=args.cluster_identity,
             flank_size=args.flank
         )
     except Exception as err:
