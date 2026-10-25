@@ -1,7 +1,7 @@
 """
 WildPrimer: Molecular Marker Mining & Primer Design CLI.
 
-Orchestrates input ingestion (raw sequencing reads or de novo assemblies),
+Orchestrates input ingestion (raw sequencing reads or de novo assemblies, plain or gzipped),
 SSR marker mining, and flanking PCR primer design for native, wild, and non-model plant species.
 Exports structured tables and summary reports ready for lab validation or publication.
 """
@@ -9,7 +9,7 @@ Exports structured tables and summary reports ready for lab validation or public
 import argparse
 import sys
 from pathlib import Path
-from typing import List, Dict
+from typing import List, Dict, Optional
 import pandas as pd
 from Bio import SeqIO
 
@@ -31,11 +31,13 @@ def run_pipeline(
     min_read_length: int = 180,
     min_quality: float = 20.0,
     cluster_identity: float = 0.95,
+    max_reads: Optional[int] = None,
+    max_markers: Optional[int] = None,
     flank_size: int = 150
 ) -> pd.DataFrame:
     """
     Execute full end-to-end marker detection and primer design pipeline for non-model plants.
-    Supports both de novo assemblies and raw reads (e.g. Roche 454, PacBio, Illumina FASTQ).
+    Supports both de novo assemblies and raw reads (e.g. Roche 454, PacBio, Illumina FASTQ, plain or .gz).
     """
     input_file = Path(input_path)
     if not input_file.exists():
@@ -64,27 +66,28 @@ def run_pipeline(
     target_fasta, mode, metrics = preprocessor.prepare_input(
         input_file=input_file,
         output_dir=processed_dir,
-        force_mode=input_type
+        force_mode=input_type,
+        max_reads=max_reads
     )
 
     if mode == "raw-reads":
         print(f"[+] Input Mode: RAW READS (FASTQ / 454 sequencing detected)")
         qc = metrics["qc"]
-        print(f"    • Total raw reads parsed:         {qc['total_reads']}")
-        print(f"    • Discarded (length < {min_read_length} bp):    {qc['discarded_length']}")
-        print(f"    • Discarded (mean Phred Q < {min_quality}): {qc['discarded_quality']}")
-        print(f"    • Passed quality filters:         {qc['passed_reads']}")
+        print(f"    - Total raw reads parsed:         {qc['total_reads']:,}")
+        print(f"    - Discarded (length < {min_read_length} bp):    {qc['discarded_length']:,}")
+        print(f"    - Discarded (mean Phred Q < {min_quality}): {qc['discarded_quality']:,}")
+        print(f"    - Passed quality filters:         {qc['passed_reads']:,}")
         
         clust = metrics["clustering"]
-        print(f"    • Redundant clonal reads removed: {clust['redundancy_reduced']} ({clust['method']})")
-        print(f"    • Final unique loci for mining:   {clust['clustered_unique']}")
-        print(f"    • Cleaned FASTA saved to:         {target_fasta.resolve()}")
+        print(f"    - Redundant clonal reads removed: {clust['redundancy_reduced']:,} ({clust['method']})")
+        print(f"    - Final unique loci for mining:   {clust['clustered_unique']:,}")
+        print(f"    - Cleaned FASTA saved to:         {target_fasta.resolve()}")
     else:
         print("[+] Input Mode: DE NOVO ASSEMBLY (Contigs / Transcripts)")
 
     # 2. Sequence Ingestion for Mining
     records = list(SeqIO.parse(str(target_fasta), "fasta"))
-    print(f"\n[+] Scanning {len(records)} sequence(s)/locus for microsatellites (SSRs)...")
+    print(f"\n[+] Scanning {len(records):,} sequence(s)/locus for microsatellites (SSRs)...")
 
     detector = SSRDetector(flank_size=flank_size)
     designer = PrimerDesigner()
@@ -93,7 +96,13 @@ def run_pipeline(
     total_markers_found = 0
     total_primers_designed = 0
 
-    for rec in records:
+    try:
+        from tqdm import tqdm
+        record_iterator = tqdm(records, desc="[+] Mining SSRs & Primers", unit="seq")
+    except ImportError:
+        record_iterator = records
+
+    for rec in record_iterator:
         markers = detector.find_markers_in_sequence(rec)
         seq_str = str(rec.seq).upper()
 
@@ -124,6 +133,13 @@ def run_pipeline(
 
             combined_results.append(row_data)
 
+            if max_markers and total_primers_designed >= max_markers:
+                print(f"\n[!] Reached requested maximum of {max_markers} designed primers.")
+                break
+
+        if max_markers and total_primers_designed >= max_markers:
+            break
+
     df_results = pd.DataFrame(combined_results)
 
     # 3. Export results table
@@ -136,15 +152,15 @@ def run_pipeline(
     print("\n" + "-" * 40)
     print("WildPrimer Execution Summary:")
     print("-" * 40)
-    print(f"Total sequences/loci analyzed:  {len(records)}")
-    print(f"Total SSR markers detected:     {total_markers_found}")
-    print(f"Primers successfully designed:  {total_primers_designed}")
+    print(f"Total sequences/loci analyzed:  {len(records):,}")
+    print(f"Total SSR markers detected:     {total_markers_found:,}")
+    print(f"Primers successfully designed:  {total_primers_designed:,}")
 
     if not df_results.empty:
         motif_summary = df_results["motif_type"].value_counts().to_dict()
         print("\nMarkers by motif class:")
         for motif, count in motif_summary.items():
-            print(f"  - {motif:15s}: {count}")
+            print(f"  - {motif:15s}: {count:,}")
 
     # 5. Generate visual figure if requested
     if output_figure and not df_results.empty:
@@ -159,7 +175,7 @@ def run_pipeline(
                 color="#1B5E20",
                 edgecolor="#0D3B10"
             )
-            plt.title("WildPrimer: SSR Marker Motif Distribution in Native Plant Contigs", fontsize=11, fontweight="bold")
+            plt.title("WildPrimer: SSR Marker Motif Distribution in Native Plant Loci", fontsize=11, fontweight="bold")
             plt.xlabel("Motif Type", fontsize=10)
             plt.ylabel("Marker Count", fontsize=10)
             plt.xticks(rotation=0)
@@ -182,7 +198,7 @@ def main():
     parser.add_argument(
         "--input", "-i",
         default="examples/sample_plant_genes.fasta",
-        help="Path to input sequence file (.fasta, .fastq, .fna) (default: examples/sample_plant_genes.fasta)"
+        help="Path to input sequence file (.fasta, .fastq, .fastq.gz, .fna) (default: examples/sample_plant_genes.fasta)"
     )
     parser.add_argument(
         "--input-type", "-t",
@@ -207,6 +223,18 @@ def main():
         type=float,
         default=0.95,
         help="Sequence similarity identity for deduplicating raw reads (default: 0.95)"
+    )
+    parser.add_argument(
+        "--max-reads",
+        type=int,
+        default=None,
+        help="Maximum raw reads to ingest (useful for fast exploration on massive datasets)"
+    )
+    parser.add_argument(
+        "--max-markers",
+        type=int,
+        default=None,
+        help="Maximum primer pairs to design before stopping"
     )
     parser.add_argument(
         "--output-table", "-o",
@@ -235,6 +263,8 @@ def main():
             min_read_length=args.min_read_length,
             min_quality=args.min_quality,
             cluster_identity=args.cluster_identity,
+            max_reads=args.max_reads,
+            max_markers=args.max_markers,
             flank_size=args.flank
         )
     except Exception as err:

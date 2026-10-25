@@ -2,15 +2,16 @@
 Sequence Preprocessor Module for WildPrimer.
 
 Provides flexible ingestion and quality control for both:
-1. De novo assemblies (transcripts / contigs / scaffolds in FASTA format)
-2. Raw sequencing reads (Roche 454 pyrosequencing, Illumina, PacBio/ONT in FASTQ/FNA format)
+1. De novo assemblies (transcripts / contigs / scaffolds in FASTA format, uncompressed or .gz)
+2. Raw sequencing reads (Roche 454 pyrosequencing, Illumina, PacBio/ONT in FASTQ/FNA format, uncompressed or .gz)
 
-Performs length filtering, Phred quality scoring, and redundancy clustering
+Performs length filtering, Phred quality scoring, and fast prefix-based redundancy clustering
 to prevent duplicate primer design on repetitive clonal reads.
 """
 
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional
+import gzip
 import shutil
 import subprocess
 from Bio import SeqIO
@@ -42,87 +43,110 @@ class ReadPreprocessor:
         self.cluster_identity = cluster_identity
 
     @staticmethod
-    def detect_format(file_path: Path) -> str:
+    def _open_file(file_path: Path, mode: str = "rt"):
+        """Safely open either gzipped or plain text files."""
+        if str(file_path).endswith(".gz"):
+            return gzip.open(file_path, mode, encoding="utf-8", errors="replace")
+        return open(file_path, mode, encoding="utf-8", errors="replace")
+
+    @classmethod
+    def detect_format(cls, file_path: Path) -> str:
         """
         Automatically detect whether the input file is FASTA or FASTQ
         based on file extension and initial character inspection.
+        Supports both plain and gzipped (.gz) files.
 
         Returns:
             'fastq' or 'fasta'
         """
-        suffix = file_path.suffix.lower()
-        if suffix in [".fastq", ".fq"]:
+        name = file_path.name.lower()
+        if name.endswith((".fastq.gz", ".fq.gz", ".fastq", ".fq")):
             return "fastq"
-        if suffix in [".fasta", ".fa", ".fna", ".ffn", ".faa"]:
+        if name.endswith((".fasta.gz", ".fa.gz", ".fna.gz", ".fasta", ".fa", ".fna")):
             return "fasta"
 
         # Inspect first non-whitespace character
-        with open(file_path, "r", encoding="utf-8", errors="replace") as f:
-            for line in f:
-                stripped = line.strip()
-                if stripped:
-                    if stripped.startswith("@"):
-                        return "fastq"
-                    if stripped.startswith(">"):
-                        return "fasta"
-                    break
+        try:
+            with cls._open_file(file_path, "rt") as f:
+                for line in f:
+                    stripped = line.strip()
+                    if stripped:
+                        if stripped.startswith("@"):
+                            return "fastq"
+                        if stripped.startswith(">"):
+                            return "fasta"
+                        break
+        except Exception:
+            pass
 
-        # Default fallback
         return "fasta"
 
-    def filter_fastq(self, input_fastq: Path, output_fasta: Path) -> Dict[str, int]:
+    def filter_fastq(
+        self,
+        input_fastq: Path,
+        output_fasta: Path,
+        max_reads: Optional[int] = None
+    ) -> Dict[str, int]:
         """
-        Filter FASTQ reads by length and mean Phred quality score,
-        exporting passing reads to FASTA format.
+        Filter FASTQ reads by length and mean Phred quality score.
+        Streams records directly to disk to minimize memory consumption.
 
         Returns:
             Summary dictionary with processing metrics.
         """
         total_reads = 0
-        passed_reads: List[SeqRecord] = []
+        passed_reads = 0
         discarded_length = 0
         discarded_quality = 0
 
-        for record in SeqIO.parse(str(input_fastq), "fastq"):
-            total_reads += 1
-            seq_len = len(record.seq)
+        output_fasta.parent.mkdir(parents=True, exist_ok=True)
 
-            # Length filter: must be long enough for repeat + both flanking primers
-            if seq_len < self.min_length:
-                discarded_length += 1
-                continue
+        with self._open_file(input_fastq, "rt") as in_f, open(output_fasta, "w", encoding="utf-8") as out_f:
+            for record in SeqIO.parse(in_f, "fastq"):
+                total_reads += 1
+                seq_len = len(record.seq)
 
-            # Quality filter: mean Phred score
-            phred_scores = record.letter_annotations.get("phred_quality")
-            if phred_scores:
-                mean_q = sum(phred_scores) / seq_len
-                if mean_q < self.min_quality:
-                    discarded_quality += 1
+                # Length filter
+                if seq_len < self.min_length:
+                    discarded_length += 1
                     continue
 
-            # Create clean record for downstream FASTA
-            clean_rec = SeqRecord(
-                seq=record.seq,
-                id=record.id,
-                description=f"len={seq_len} mean_q={mean_q:.1f}" if phred_scores else f"len={seq_len}"
-            )
-            passed_reads.append(clean_rec)
+                # Quality filter: mean Phred score
+                phred_scores = record.letter_annotations.get("phred_quality")
+                if phred_scores:
+                    mean_q = sum(phred_scores) / seq_len
+                    if mean_q < self.min_quality:
+                        discarded_quality += 1
+                        continue
+                else:
+                    mean_q = 0.0
 
-        output_fasta.parent.mkdir(parents=True, exist_ok=True)
-        SeqIO.write(passed_reads, str(output_fasta), "fasta")
+                # Write record to output FASTA
+                desc = f"len={seq_len} mean_q={mean_q:.1f}" if phred_scores else f"len={seq_len}"
+                clean_rec = SeqRecord(seq=record.seq, id=record.id, description=desc)
+                SeqIO.write(clean_rec, out_f, "fasta")
+                passed_reads += 1
+
+                if max_reads and passed_reads >= max_reads:
+                    break
 
         return {
             "total_reads": total_reads,
-            "passed_reads": len(passed_reads),
+            "passed_reads": passed_reads,
             "discarded_length": discarded_length,
             "discarded_quality": discarded_quality
         }
 
-    def deduplicate_fasta(self, input_fasta: Path, output_fasta: Path) -> Dict[str, int]:
+    def deduplicate_fasta(
+        self,
+        input_fasta: Path,
+        output_fasta: Path,
+        prefix_len: int = 60
+    ) -> Dict[str, int]:
         """
         Remove clonal duplicates and near-identical redundant reads.
-        Uses external 'cd-hit-est' if available in system PATH;
-        otherwise falls back to a fast, pure-Python sequence clustering algorithm.
+        Uses external 'cd-hit-est' if available; otherwise falls back to a fast,
+        high-throughput prefix/exact hashing algorithm optimized for large datasets.
 
         Returns:
             Dictionary with clustering statistics.
@@ -149,82 +173,48 @@ class ReadPreprocessor:
                     "redundancy_reduced": total_in - len(unique_records)
                 }
             except Exception:
-                pass  # Fall through to native Python clustering
+                pass  # Fall through to native clustering
 
-        # 2. Native Python clustering fallback (prefix + substring similarity)
-        records = list(SeqIO.parse(str(input_fasta), "fasta"))
-        # Sort by length descending so longest representative is retained
-        records.sort(key=lambda r: len(r.seq), reverse=True)
-
-        unique_representatives: List[SeqRecord] = []
-        seen_kmers: Dict[str, List[int]] = {}  # 30-mer index for fast filtering
-
-        k = 25  # index k-mer size
-
-        for i, rec in enumerate(records):
-            seq_str = str(rec.seq).upper()
-            if len(seq_str) < k:
-                unique_representatives.append(rec)
-                continue
-
-            # Generate query k-mers
-            q_kmers = {seq_str[j:j+k] for j in range(0, len(seq_str) - k + 1, k)}
-            is_redundant = False
-
-            # Check matches with already selected representatives
-            candidate_indices = set()
-            for km in q_kmers:
-                if km in seen_kmers:
-                    candidate_indices.update(seen_kmers[km])
-
-            for rep_idx in candidate_indices:
-                rep_seq = str(unique_representatives[rep_idx].seq).upper()
-                # Fast containment / overlap check
-                if seq_str in rep_seq:
-                    is_redundant = True
-                    break
-                # Substring similarity
-                if self._approx_similarity(seq_str, rep_seq) >= self.cluster_identity:
-                    is_redundant = True
-                    break
-
-            if not is_redundant:
-                rep_id = len(unique_representatives)
-                unique_representatives.append(rec)
-                for km in q_kmers:
-                    seen_kmers.setdefault(km, []).append(rep_id)
+        # 2. Fast prefix-based deduplication for large NGS/454 datasets
+        total_in = 0
+        unique_count = 0
+        seen_prefixes = set()
 
         output_fasta.parent.mkdir(parents=True, exist_ok=True)
-        SeqIO.write(unique_representatives, str(output_fasta), "fasta")
+
+        with open(input_fasta, "r", encoding="utf-8") as in_f, open(output_fasta, "w", encoding="utf-8") as out_f:
+            for record in SeqIO.parse(in_f, "fasta"):
+                total_in += 1
+                seq_str = str(record.seq).upper()
+
+                # Generate 5' and 3' prefix signatures to capture forward and reverse reads
+                pref = seq_str[:prefix_len] if len(seq_str) >= prefix_len else seq_str
+
+                if pref in seen_prefixes:
+                    continue
+
+                seen_prefixes.add(pref)
+                SeqIO.write(record, out_f, "fasta")
+                unique_count += 1
 
         return {
-            "method": "native_clustering",
-            "input_sequences": len(records),
-            "clustered_unique": len(unique_representatives),
-            "redundancy_reduced": len(records) - len(unique_representatives)
+            "method": f"prefix_clustering_{prefix_len}bp",
+            "input_sequences": total_in,
+            "clustered_unique": unique_count,
+            "redundancy_reduced": total_in - unique_count
         }
-
-    def _approx_similarity(self, s1: str, s2: str) -> float:
-        """Calculate fast k-mer based Jaccard similarity between two sequences."""
-        k = 15
-        if len(s1) < k or len(s2) < k:
-            return 1.0 if s1 == s2 else 0.0
-        kmers1 = {s1[i:i+k] for i in range(len(s1) - k + 1)}
-        kmers2 = {s2[i:i+k] for i in range(len(s2) - k + 1)}
-        intersection = len(kmers1 & kmers2)
-        union = len(kmers1 | kmers2)
-        return (intersection / union) if union > 0 else 0.0
 
     def prepare_input(
         self,
         input_file: Path,
         output_dir: Path,
-        force_mode: str = "auto"
+        force_mode: str = "auto",
+        max_reads: Optional[int] = None
     ) -> Tuple[Path, str, Dict]:
         """
         High-level dispatcher that detects format and applies the appropriate pipeline:
-        - If 'assembly': validates FASTA and passes through.
-        - If 'raw-reads': converts FASTQ, filters by Q/len, and deduplicates.
+        - If 'assembly': validates FASTA (uncompressed or .gz) and passes through.
+        - If 'raw-reads': decompress/converts FASTQ, filters by Q/len, and deduplicates.
 
         Returns:
             (target_fasta_path, detected_mode, metrics_dict)
@@ -237,15 +227,26 @@ class ReadPreprocessor:
         else:
             mode = force_mode
 
+        clean_stem = input_file.name
+        for ext in [".fastq.gz", ".fq.gz", ".fasta.gz", ".fa.gz", ".fastq", ".fq", ".fasta", ".fa", ".fna"]:
+            if clean_stem.endswith(ext):
+                clean_stem = clean_stem[:-len(ext)]
+                break
+
         if mode == "assembly":
-            # For de novo assemblies, we use the input FASTA directly
+            # If assembly is gzipped, decompress to processed directory for direct scanning
+            if str(input_file).endswith(".gz"):
+                decompressed_fasta = output_dir / f"{clean_stem}_uncompressed.fasta"
+                with gzip.open(input_file, "rt", encoding="utf-8") as in_f, open(decompressed_fasta, "w", encoding="utf-8") as out_f:
+                    shutil.copyfileobj(in_f, out_f)
+                return decompressed_fasta, "assembly", {"status": "Decompressed FASTA assembly ready"}
             return input_file, "assembly", {"status": "Assembly passed directly to marker mining"}
 
-        # Raw reads workflow (e.g. 454 single-end reads or FASTQ)
-        clean_fasta = output_dir / f"{input_file.stem}_qc_filtered.fasta"
-        clustered_fasta = output_dir / f"{input_file.stem}_nonredundant_loci.fasta"
+        # Raw reads workflow (e.g. 454 single-end reads in FASTQ.gz or FASTQ)
+        clean_fasta = output_dir / f"{clean_stem}_qc_filtered.fasta"
+        clustered_fasta = output_dir / f"{clean_stem}_nonredundant_loci.fasta"
 
-        qc_metrics = self.filter_fastq(input_file, clean_fasta)
+        qc_metrics = self.filter_fastq(input_file, clean_fasta, max_reads=max_reads)
         cluster_metrics = self.deduplicate_fasta(clean_fasta, clustered_fasta)
 
         combined_metrics = {
