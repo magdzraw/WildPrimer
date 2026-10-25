@@ -1,4 +1,4 @@
-# 🌿 WildPrimer
+#  WildPrimer
 
 ### Molecular Marker Mining & Primer Design for Non-Model & Native Plants
 
@@ -166,14 +166,6 @@ The resulting table provides all parameters needed for oligo synthesis and PCR v
 - [ ] Direct calculation of expected polymorphism indices (PIC value estimation).
 - [ ] Export directly into GeneMapper / Peak Scanner panel formats for capillary electrophoresis.
 - [ ] Spatial genetic structure module using GIS (`GeoPandas`) for native population allele frequencies.
-
----
-
-## Author & Academic Background
-
-- **Field**: Plant Biotechnology (BSc. in Plant Biotechnology)
-- **Areas of Focus**: Molecular Markers, Bioinformatics, Biostatistics, Molecular Biology & GIS.
-- **GitHub**: [@magdzraw](https://github.com/magdzraw)
 
 ---
 
