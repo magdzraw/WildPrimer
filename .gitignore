@@ -1,0 +1,103 @@
+# ==========================================
+# Biological & Genomic Data Files
+# ==========================================
+# Ignore large genomic, transcriptomic, and sequencing data
+*.fasta
+*.fa
+*.fna
+*.ffn
+*.faa
+*.fastq
+*.fq
+*.fastq.gz
+*.fq.gz
+*.bam
+*.sam
+*.cram
+*.bai
+*.csi
+*.vcf
+*.vcf.gz
+*.bcf
+*.gff
+*.gff3
+*.gtf
+*.bed
+*.ab1
+*.scf
+*.sra
+*.aln
+*.phy
+
+# Whitelist small test/example datasets for demonstration purposes
+!examples/*.fasta
+!examples/*.fa
+
+# ==========================================
+# Project Data & Results Directories
+# ==========================================
+# Ignore data contents, but preserve directory structure via .gitkeep
+data/raw/*
+!data/raw/.gitkeep
+
+data/processed/*
+!data/processed/.gitkeep
+
+results/tables/*
+!results/tables/.gitkeep
+
+results/figures/*
+!results/figures/.gitkeep
+
+# ==========================================
+# Python & Bytecode
+# ==========================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# ==========================================
+# Virtual Environments
+# ==========================================
+.venv/
+venv/
+ENV/
+env/
+.conda/
+env.bak/
+venv.bak/
+
+# ==========================================
+# Jupyter Notebooks
+# ==========================================
+.ipynb_checkpoints/
+*/.ipynb_checkpoints/*
+
+# ==========================================
+# IDEs & System Files
+# ==========================================
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+.DS_Store
+Thumbs.db
+desktop.ini
+*.log
