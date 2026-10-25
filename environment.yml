@@ -1,4 +1,4 @@
-name: plant-marker-pipeline
+name: wildprimer
 channels:
   - conda-forge
   - bioconda

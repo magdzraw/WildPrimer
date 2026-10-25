@@ -1,39 +1,43 @@
-# Plant Molecular Marker Detection & Primer Design Pipeline
+# 🌿 WildPrimer
+
+### Molecular Marker Mining & Primer Design for Non-Model & Native Plants
 
 [![Python Version](https://img.shields.io/badge/Python-3.10%20%7C%203.11-blue.svg)](https://www.python.org/)
 [![Biopython](https://img.shields.io/badge/Library-Biopython-brightgreen.svg)](https://biopython.org/)
-[![Primer3](https://img.shields.io/badge/Engine-Primer3--py-orange.svg)](https://github.com/libprimer3/primer3-py)
+[![Primer3 Engine](https://img.shields.io/badge/Engine-Primer3--py-orange.svg)](https://github.com/libprimer3/primer3-py)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Field](https://img.shields.io/badge/Discipline-Plant%20Biotechnology%20%26%20Bioinformatics-darkgreen.svg)](#)
+[![Field](https://img.shields.io/badge/Discipline-Plant%20Biotechnology%20%7C%20Conservation%20Genetics-darkgreen.svg)](#)
 
-An automated, reproducible bioinformatics pipeline designed for plant biotechnologists and geneticists to identify **Simple Sequence Repeats (SSRs / microsatellites)** from FASTA sequences and design flanking PCR primers for laboratory genotyping, cultivar fingerprinting, and **Marker-Assisted Selection (MAS)**.
+**WildPrimer** is a specialized, reproducible bioinformatics toolkit designed for plant biotechnologists, evolutionary biologists, and conservation geneticists working with **non-model plants, wild flora, and orphan crops**.
 
----
-
-## Biological Context & Motivation
-
-Molecular markers are fundamental tools in modern plant breeding, germplasm conservation, and molecular plant pathology. Among genetic markers:
-
-- **Microsatellites (SSRs)**: Ubiquitous, hypervariable, co-dominant, and multi-allelic tandem repeat motifs (e.g., $(GA)_n$, $(CTT)_n$).
-- **Applications in Plant Science**:
-  - **Cultivar Identification & Genetic Purity**: Unambiguous DNA fingerprinting of crop varieties and rootstocks.
-  - **Marker-Assisted Selection (MAS)**: Tracking disease-resistance genes (e.g., $R$-genes in *Solanum* or *Triticum*) across breeding generations without phenotypic screening.
-  - **Population Genetics & Gene Flow**: Assessing allelic diversity and spatial genetic structure in agricultural and wild populations.
-
-This pipeline automates the transition from raw genomic or transcriptomic FASTA contigs to laboratory-ready PCR primer pairs optimized for standard agarose/polyacrylamide gel electrophoresis or capillary sequencer detection.
+It provides an end-to-end pipeline to mine polymorphic **Simple Sequence Repeats (SSRs / microsatellites)** *de novo* directly from unannotated transcriptomic (*de novo* RNA-seq assemblies) or genomic FASTA contigs, and designs flanking PCR primers optimized for experimental laboratory genotyping.
 
 ---
 
-## Pipeline Architecture & Workflow
+## The Challenge in Non-Model & Native Flora
+
+While model crops (*Arabidopsis*, rice, maize) have telomere-to-telomere reference genomes and dense SNP arrays, thousands of ecologically and agronomically vital species lack genomic resources:
+
+- **No Reference Genome**: Native trees, endemic shrubs, and wild crop relatives often only have raw transcriptome assemblies (*Trinity*, *SOAPdenovo-Trans*) or shallow genome skimming sequences.
+- **Need for Co-Dominant Markers**: Microsatellites (SSRs) remain the most accessible, highly polymorphic, and cost-effective co-dominant markers for:
+  - **Conservation Genetics**: Estimating heterozygosity, allelic richness, and inbreeding depression in threatened populations.
+  - **Phylogeography & Gene Flow**: Tracking spatial dispersal and historical refugia across native ecosystems.
+  - **Cultivar Fingerprinting & MAS**: Characterizing native germplasm collections and wild relatives for crop breeding.
+
+**WildPrimer** bridges this gap by discovering informative SSR loci and automatically designing valid PCR primers without requiring reference annotations or genomic coordinates.
+
+---
+
+## Pipeline Workflow
 
 ```mermaid
 flowchart TD
-    A["Raw Plant FASTA Sequences\n(Genomic, Transcriptomic or Target Gene)"] --> B["Sequence Ingestion & Validation\n(Biopython SeqIO)"]
-    B --> C["SSR Molecular Marker Detection\n(Di-, Tri-, Tetra-, Penta-, Hexanucleotides)"]
+    A["Non-Model Plant FASTA Contigs\n(De novo RNA-seq / Genome Skimming)"] --> B["Sequence Quality & Ingestion\n(Biopython SeqIO)"]
+    B --> C["De Novo SSR Marker Mining\n(Di-, Tri-, Tetra-, Penta-, Hexanucleotides)"]
     C --> D["Flanking Sequence Extraction\n(Upstream 5' & Downstream 3' flanks)"]
-    D --> E["Thermodynamic Primer Design\n(Primer3 Engine)"]
-    E --> F["Quality Filtering & Optimization\n(Tm: 58-62°C, GC: 35-65%, Amplicon: 100-300 bp)"]
-    F --> G["Structured Tabular Report\n(results/tables/designed_markers_primers.tsv)"]
+    D --> E["Thermodynamic Primer Design\n(Primer3 Thermodynamic Engine)"]
+    E --> F["Parameter Optimization\n(Tm: 58-62°C, GC: 35-65%, Amplicon: 100-300 bp)"]
+    F --> G["Lab-Ready Tabular Output\n(results/tables/designed_markers_primers.tsv)"]
     F --> H["Marker Distribution Visuals\n(results/figures/marker_distribution.png)"]
 
     style A fill:#e8f5e9,stroke:#2e7d32,stroke-width:2px
@@ -45,49 +49,57 @@ flowchart TD
 
 ---
 
-## Directory Structure
-
-This repository follows industry standards for computational biology and reproducible data science:
+## Repository Structure
 
 ```text
-marker-primer-pipeline/
+WildPrimer/
 ├── data/
-│   ├── raw/                # Original, untransformed FASTA files (gitignored)
-│   └── processed/          # Cleaned, filtered, or indexed sequences (gitignored)
+│   ├── raw/                # Large raw FASTA files / assemblies (gitignored)
+│   └── processed/          # Filtered, quality-controlled contigs (gitignored)
 ├── examples/
-│   └── sample_plant_genes.fasta  # Curated plant benchmark sequences for testing
-├── notebooks/              # Jupyter notebooks for interactive analysis & figures
+│   └── sample_plant_genes.fasta  # Curated benchmark contigs from native flora
+├── notebooks/              # Interactive exploration & visual reporting
 ├── results/
-│   ├── figures/            # Generated high-resolution plots (DPI 300)
+│   ├── figures/            # High-resolution plots (DPI 300)
 │   └── tables/             # Tabular marker & primer design outputs (.tsv)
 ├── src/
 │   ├── __init__.py         # Package initialization
-│   ├── marker_detector.py  # Algorithmic detection of microsatellite motifs
-│   ├── primer_designer.py  # Primer3 binding and thermodynamic parameters
-│   └── pipeline.py         # End-to-end command-line orchestrator
-├── .gitignore              # Bioinformatics-tailored ignore rules (BAM, FASTA, caches)
-├── environment.yml         # Reproducible Conda/Mamba virtual environment definition
+│   ├── marker_detector.py  # De novo SSR identification engine
+│   ├── primer_designer.py  # Primer3 binding & thermodynamic constraints
+│   └── pipeline.py         # End-to-end CLI orchestrator
+├── .gitignore              # Ignores heavy sequencing data (BAM, FASTQ, caches)
+├── environment.yml         # Reproducible Conda/Mamba environment
 ├── requirements.txt        # Python package dependencies (pip)
 └── README.md               # Scientific project documentation
 ```
 
 ---
 
+## Benchmark Dataset
+
+Included in [`examples/sample_plant_genes.fasta`](examples/sample_plant_genes.fasta) are curated candidate contigs representing native South American and Mediterranean-climate flora:
+- *Quillaja saponaria* (Quillay, medicinal soapbark tree - saponin pathway transcript)
+- *Araucaria araucana* (Pehuén / Monkey puzzle tree - stress-responsive contig)
+- *Nothofagus dombeyi* (Coihue - native forest tree candidate locus)
+- *Ugni molinae* (Murtilla / Chilean guava - flavonoid biosynthesis unigene)
+
+---
+
 ## Installation & Setup
 
-### Option 1: Conda / Mamba (Recommended for Bioinformatics)
+### Option A: Conda / Mamba (Recommended)
 
 ```bash
 # Clone the repository
-git clone https://github.com/<your-username>/marker-primer-pipeline.git
-cd marker-primer-pipeline
+git clone https://github.com/magdzraw/WildPrimer.git
+cd WildPrimer
 
 # Create and activate environment
 conda env create -f environment.yml
-conda activate plant-marker-pipeline
+conda activate wildprimer
 ```
 
-### Option 2: Python `venv` + `pip`
+### Option B: Python `venv` + `pip`
 
 ```bash
 # Create virtual environment
@@ -108,7 +120,7 @@ pip install -r requirements.txt
 
 ## Quickstart & Usage
 
-Run the pipeline using the included benchmark plant dataset:
+Run the pipeline using the native plant benchmark contigs:
 
 ```bash
 python src/pipeline.py --input examples/sample_plant_genes.fasta \
@@ -116,56 +128,55 @@ python src/pipeline.py --input examples/sample_plant_genes.fasta \
                        --output-figure results/figures/marker_distribution.png
 ```
 
-### Command-Line Arguments
+### CLI Parameters
 
 | Flag | Long Flag | Default | Description |
 |:---|:---|:---|:---|
-| `-i` | `--input` | `examples/sample_plant_genes.fasta` | Path to input multi-FASTA sequence file |
-| `-o` | `--output-table` | `results/tables/designed_markers_primers.tsv` | Path for TSV output file |
-| `-f` | `--output-figure` | `results/figures/marker_distribution.png` | Path for summary frequency chart |
-| | `--flank` | `150` | Nucleotide flanking window length (bp) around marker |
+| `-i` | `--input` | `examples/sample_plant_genes.fasta` | Path to input multi-FASTA contigs file |
+| `-o` | `--output-table` | `results/tables/designed_markers_primers.tsv` | Destination path for TSV results table |
+| `-f` | `--output-figure` | `results/figures/marker_distribution.png` | Destination path for motif summary chart |
+| | `--flank` | `150` | Nucleotide flanking window length (bp) for primer picking |
 
 ---
 
 ## Output Data Schema
 
-The resulting table provides all parameters required for ordering primers and executing PCR runs:
+The resulting table provides all parameters needed for oligo synthesis and PCR verification:
 
 | Field Name | Description | Example |
 |:---|:---|:---|
-| `sequence_id` | FASTA header identifier | `Solanum_tuberosum_R1_gene` |
+| `sequence_id` | Contig or unigene identifier | `Quillaja_saponaria_transcript_c1248` |
 | `motif_type` | Repeat motif classification | `Trinucleotide` |
 | `motif` | Basic repeating nucleotide unit | `CTT` |
 | `repeats` | Number of continuous tandem repeats | `6` |
-| `start_1based` | 1-based start coordinate in locus | `241` |
-| `end_1based` | 1-based end coordinate in locus | `258` |
+| `start_1based` | 1-based start coordinate in contig | `241` |
+| `end_1based` | 1-based end coordinate in contig | `258` |
 | `primer_forward_seq` | 5' to 3' Forward Primer sequence | `GGCCTCTTAGATGAATTCCG` |
 | `primer_reverse_seq` | 5' to 3' Reverse Primer sequence | `CCATAGAAATCAACGATGAA` |
 | `primer_forward_tm` | Melting temperature ($T_m$) of forward primer | `59.8` °C |
 | `primer_reverse_tm` | Melting temperature ($T_m$) of reverse primer | `60.1` °C |
 | `amplicon_size_bp` | Expected PCR product length | `194` bp |
-| `primer_status` | Status code (`DESIGNED` or reason for rejection) | `DESIGNED` |
+| `primer_status` | Status code (`DESIGNED` or rejection cause) | `DESIGNED` |
 
 ---
 
-## Roadmap & Future Enhancements
+## Roadmap
 
-- [ ] Support for **InDel (Insertion/Deletion) & SNP** marker discovery from multi-sequence alignments.
-- [ ] Integration with **NCBI E-Utilities** to fetch candidate genes directly by accession ID.
-- [ ] Spatial genetic structure mapping using GIS tools (`GeoPandas` / QGIS integration for allele frequency distribution).
-- [ ] Interactive Streamlit/Dash dashboard for point-and-click marker discovery.
+- [ ] Automated electronic PCR (*e-PCR*) validation against local contig databases to assess single-locus specificity.
+- [ ] Direct calculation of expected polymorphism indices (PIC value estimation).
+- [ ] Export directly into GeneMapper / Peak Scanner panel formats for capillary electrophoresis.
+- [ ] Spatial genetic structure module using GIS (`GeoPandas`) for native population allele frequencies.
 
 ---
 
 ## Author & Academic Background
 
 - **Field**: Plant Biotechnology (BSc. in Plant Biotechnology)
-- **Specialization**: Molecular Markers, Bioinformatics, Biostatistics, Molecular Biology & GIS.
-- **GitHub**: [@your-username](https://github.com/your-username)
-- **LinkedIn**: [Your Profile](https://linkedin.com)
+- **Areas of Focus**: Molecular Markers, Bioinformatics, Biostatistics, Molecular Biology & GIS.
+- **GitHub**: [@magdzraw](https://github.com/magdzraw)
 
 ---
 
 ## License
 
-This project is licensed under the MIT License - see the LICENSE file for details.
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.

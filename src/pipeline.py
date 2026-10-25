@@ -1,7 +1,8 @@
 """
-Molecular Marker & Primer Design Pipeline CLI.
+WildPrimer: Molecular Marker Mining & Primer Design CLI.
 
-Orchestrates FASTA sequence ingestion, SSR marker detection, and flanking PCR primer design.
+Orchestrates de novo FASTA sequence ingestion, SSR marker mining, and flanking PCR
+primer design for native, wild, and non-model plant species.
 Exports structured tables and summary reports ready for lab validation or publication.
 """
 
@@ -23,25 +24,24 @@ def run_pipeline(
     flank_size: int = 150
 ) -> pd.DataFrame:
     """
-    Execute full end-to-end marker detection and primer design pipeline.
+    Execute full end-to-end marker detection and primer design pipeline for non-model plants.
     """
     fasta_file = Path(fasta_path)
     if not fasta_file.exists():
         raise FileNotFoundError(f"Input FASTA file not found: {fasta_path}")
 
-    print("=" * 65)
-    print("Plant Molecular Marker & Primer Design Pipeline")
-    print("=" * 65)
+    print("=" * 68)
+    print("🌿 WildPrimer: Marker Mining & Primer Design for Non-Model Plants")
+    print("=" * 68)
     print(f"[+] Reading input FASTA: {fasta_file.resolve()}")
 
     records = list(SeqIO.parse(str(fasta_file), "fasta"))
-    print(f"[+] Loaded {len(records)} sequence(s).")
+    print(f"[+] Loaded {len(records)} sequence(s)/contig(s).")
 
     detector = SSRDetector(flank_size=flank_size)
     designer = PrimerDesigner()
 
     combined_results: List[Dict] = []
-
     total_markers_found = 0
     total_primers_designed = 0
 
@@ -87,11 +87,11 @@ def run_pipeline(
 
     # Print summary statistics
     print("\n" + "-" * 40)
-    print("Pipeline Execution Summary:")
+    print("WildPrimer Execution Summary:")
     print("-" * 40)
-    print(f"Total sequences analyzed: {len(records)}")
-    print(f"Total SSR markers detected: {total_markers_found}")
-    print(f"Primers successfully designed: {total_primers_designed}")
+    print(f"Total sequences/contigs analyzed: {len(records)}")
+    print(f"Total SSR markers detected:      {total_markers_found}")
+    print(f"Primers successfully designed:   {total_primers_designed}")
 
     if not df_results.empty:
         motif_summary = df_results["motif_type"].value_counts().to_dict()
@@ -109,10 +109,10 @@ def run_pipeline(
             plt.figure(figsize=(8, 4.5), dpi=300)
             df_results["motif_type"].value_counts().plot(
                 kind="bar",
-                color="#2E7D32",
-                edgecolor="#1B5E20"
+                color="#1B5E20",
+                edgecolor="#0D3B10"
             )
-            plt.title("Distribution of Detected Plant SSR Molecular Markers", fontsize=12, fontweight="bold")
+            plt.title("WildPrimer: SSR Marker Motif Distribution in Native Plant Contigs", fontsize=11, fontweight="bold")
             plt.xlabel("Motif Type", fontsize=10)
             plt.ylabel("Marker Count", fontsize=10)
             plt.xticks(rotation=0)
@@ -120,27 +120,27 @@ def run_pipeline(
             plt.tight_layout()
             plt.savefig(fig_path)
             plt.close()
-            print(f"[✓] Figure saved to: {fig_path.resolve()}")
+            print(f"[✓] Distribution chart saved to: {fig_path.resolve()}")
         except Exception as e:
             print(f"[!] Note: Visualization could not be generated ({e}).")
 
-    print("=" * 65)
+    print("=" * 68)
     return df_results
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Bioinformatics pipeline for plant SSR marker detection and automated primer design."
+        description="WildPrimer: Bioinformatics pipeline for SSR marker mining and primer design in non-model native plants."
     )
     parser.add_argument(
         "--input", "-i",
         default="examples/sample_plant_genes.fasta",
-        help="Path to input FASTA file (default: examples/sample_plant_genes.fasta)"
+        help="Path to input FASTA contigs (default: examples/sample_plant_genes.fasta)"
     )
     parser.add_argument(
         "--output-table", "-o",
         default="results/tables/designed_markers_primers.tsv",
-        help="Path for tab-separated output table (default: results/tables/designed_markers_primers.tsv)"
+        help="Path for TSV output table (default: results/tables/designed_markers_primers.tsv)"
     )
     parser.add_argument(
         "--output-figure", "-f",
@@ -163,7 +163,7 @@ def main():
             flank_size=args.flank
         )
     except Exception as err:
-        print(f"[ERROR] Pipeline execution failed: {err}", file=sys.stderr)
+        print(f"[ERROR] WildPrimer execution failed: {err}", file=sys.stderr)
         sys.exit(1)
 
 
