@@ -12,6 +12,10 @@ from pathlib import Path
 from typing import List, Dict
 import pandas as pd
 from Bio import SeqIO
+# Ensure sibling modules in src/ are always resolvable
+CURRENT_DIR = Path(__file__).resolve().parent
+if str(CURRENT_DIR) not in sys.path:
+    sys.path.insert(0, str(CURRENT_DIR))
 
 from marker_detector import SSRDetector
 from primer_designer import PrimerDesigner
@@ -30,8 +34,15 @@ def run_pipeline(
     if not fasta_file.exists():
         raise FileNotFoundError(f"Input FASTA file not found: {fasta_path}")
 
+    # Handle UTF-8 encoding safely across OS terminals
+    if hasattr(sys.stdout, "reconfigure"):
+        try:
+            sys.stdout.reconfigure(encoding="utf-8")
+        except Exception:
+            pass
+
     print("=" * 68)
-    print("🌿 WildPrimer: Marker Mining & Primer Design for Non-Model Plants")
+    print("[*] WildPrimer: Marker Mining & Primer Design for Non-Model Plants")
     print("=" * 68)
     print(f"[+] Reading input FASTA: {fasta_file.resolve()}")
 
@@ -83,7 +94,7 @@ def run_pipeline(
     out_path = Path(output_table)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     df_results.to_csv(out_path, sep="\t", index=False)
-    print(f"\n[✓] Results successfully exported to: {out_path.resolve()}")
+    print(f"\n[OK] Results successfully exported to: {out_path.resolve()}")
 
     # Print summary statistics
     print("\n" + "-" * 40)
@@ -97,7 +108,7 @@ def run_pipeline(
         motif_summary = df_results["motif_type"].value_counts().to_dict()
         print("\nMarkers by motif class:")
         for motif, count in motif_summary.items():
-            print(f"  • {motif:15s}: {count}")
+            print(f"  - {motif:15s}: {count}")
 
     # Generate visual figure if requested
     if output_figure and not df_results.empty:
@@ -120,7 +131,7 @@ def run_pipeline(
             plt.tight_layout()
             plt.savefig(fig_path)
             plt.close()
-            print(f"[✓] Distribution chart saved to: {fig_path.resolve()}")
+            print(f"[OK] Distribution chart saved to: {fig_path.resolve()}")
         except Exception as e:
             print(f"[!] Note: Visualization could not be generated ({e}).")
 
