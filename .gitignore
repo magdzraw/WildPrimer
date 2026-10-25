@@ -38,12 +38,13 @@
 # ==========================================
 # Project Data & Results Directories
 # ==========================================
-# Ignore data contents, but preserve directory structure via .gitkeep
-data/raw/*
+# Ignore data contents and root files, but preserve directory structure via .gitkeep
+data/*
+!data/raw/
 !data/raw/.gitkeep
-
-data/processed/*
+!data/processed/
 !data/processed/.gitkeep
+*.pdf
 
 results/tables/*
 !results/tables/.gitkeep

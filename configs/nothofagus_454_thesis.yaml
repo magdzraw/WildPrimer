@@ -1,0 +1,54 @@
+# ==============================================================================
+# WildPrimer Configuration: Nothofagus obliqua 454 Pool-Seq (Thesis Profile)
+# ==============================================================================
+platform: roche-454
+
+qc:
+  enabled: true
+  min_length: 180              # Exclude short fragments < 180 bp
+  min_quality: 20.0            # Minimum mean Phred quality score (Q20 = 99% accuracy)
+  quality_offset: 33           # Standard Phred+33 quality offset
+  trim_poly_at: false
+
+deduplication:
+  enabled: true
+  method: prefix_hash          # Fast 5' prefix clustering for 454 emulsion PCR duplicates
+  prefix_length: 60            # 60 bp prefix window
+  cluster_identity: 0.95
+
+assembly:
+  enabled: false               # Direct mining on long 454 reads (or set true for SPAdes)
+  assembler: spades
+  kmers: [21, 33, 55]
+  careful: true
+
+mapping:
+  enabled: false               # Automated flanking depth consensus filter (requires minimap2/samtools)
+  aligner: minimap2
+  preset: map-ont              # High indel tolerance for pyrosequencing homopolymers
+  min_flanking_depth: 3        # Require >= 3 reads consensus across flanking regions (IGV criterion)
+
+ssr:
+  min_repeats:
+    2: 6                       # Dinucleotides
+    3: 5                       # Trinucleotides
+    4: 4                       # Tetranucleotides
+    5: 3                       # Pentanucleotides
+    6: 3                       # Hexanucleotides
+  exclude_mononucleotides: true
+  flank_size: 150
+
+primer:
+  opt_tm: 60.0
+  min_tm: 57.0
+  max_tm: 63.0
+  max_tm_diff: 2.0
+  opt_gc: 50.0
+  min_gc: 35.0
+  max_gc: 65.0
+  min_size: 18
+  opt_size: 20
+  max_size: 24
+  product_size_ranges:
+    - [100, 300]
+    - [80, 400]

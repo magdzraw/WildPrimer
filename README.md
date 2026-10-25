@@ -145,31 +145,46 @@ pip install -r requirements.txt
 
 ## Quickstart & Usage
 
-### 1. Running on De Novo Assemblies (FASTA)
+### 1. Running with Platform Presets or Configuration Profiles
+
+WildPrimer adapts to any sequencing platform or genomic context using built-in presets or YAML configuration files:
 
 ```bash
+# Using a platform preset (roche-454, illumina, pacbio-hifi, nanopore, assembly)
+python src/pipeline.py --input data/SRR1037140.fastq.gz --preset roche-454
+
+# Or using a tailored YAML configuration file
+python src/pipeline.py --input data/SRR1037140.fastq.gz \
+                       --config configs/nothofagus_454_thesis.yaml \
+                       --output-table results/tables/nothofagus_primers.tsv
+```
+
+### 2. Running on Benchmark Datasets
+
+```bash
+# A. De novo assemblies (FASTA contigs)
 python src/pipeline.py --input examples/sample_plant_genes.fasta \
                        --output-table results/tables/designed_markers_primers.tsv \
                        --output-figure results/figures/marker_distribution.png
-```
 
-### 2. Running on Raw Reads (FASTQ / Roche 454)
-
-```bash
+# B. Raw sequencing reads (FASTQ / 454)
 python src/pipeline.py --input examples/sample_454_nothofagus_reads.fastq \
-                       --output-table results/tables/nothofagus_454_primers.tsv \
-                       --output-figure results/figures/nothofagus_454_distribution.png
+                       --preset roche-454 \
+                       --output-table results/tables/nothofagus_454_primers.tsv
 ```
 
 ### CLI Parameters
 
 | Flag | Long Flag | Default | Description |
 |:---|:---|:---|:---|
-| `-i` | `--input` | `examples/sample_plant_genes.fasta` | Input file path (`.fasta`, `.fastq`, `.fna`) |
+| `-i` | `--input` | `examples/sample_plant_genes.fasta` | Input file path (`.fasta`, `.fastq`, `.fastq.gz`, `.fna`) |
+| `-c` | `--config` | `None` | Path to YAML configuration file (e.g. `configs/nothofagus_454_thesis.yaml`) |
+| `-p` | `--preset` | `None` | Platform profile preset (`roche-454`, `illumina`, `pacbio-hifi`, `nanopore`, `assembly`) |
 | `-t` | `--input-type` | `auto` | Data mode: `auto` (auto-detected), `assembly`, or `raw-reads` |
-| | `--min-read-length` | `180` | Minimum read length in bp for raw reads |
-| | `--min-quality` | `20.0` | Minimum mean Phred score threshold for raw reads |
-| | `--cluster-identity` | `0.95` | Sequence similarity threshold for collapsing clonal duplicate reads |
+| | `--min-read-length` | `180` | Minimum read length in bp for QC filtering |
+| | `--min-quality` | `20.0` | Minimum mean Phred score threshold for QC filtering |
+| | `--max-reads` | `None` | Cap maximum raw reads to process (useful for rapid testing) |
+| | `--max-markers` | `None` | Cap maximum primer pairs to design before stopping |
 | `-o` | `--output-table` | `results/tables/designed_markers_primers.tsv` | Destination path for TSV results table |
 | `-f` | `--output-figure` | `results/figures/marker_distribution.png` | Destination path for motif summary chart |
 | | `--flank` | `150` | Nucleotide flanking window length (bp) for primer picking |

@@ -86,6 +86,24 @@ class PrimerDesigner:
             )
         self.global_args = global_args or self.DEFAULT_GLOBAL_ARGS.copy()
 
+    @classmethod
+    def from_config(cls, primer_config) -> "PrimerDesigner":
+        """Instantiate PrimerDesigner using a PrimerConfig object."""
+        args = cls.DEFAULT_GLOBAL_ARGS.copy()
+        if hasattr(primer_config, "opt_tm"):
+            args['PRIMER_OPT_TM'] = primer_config.opt_tm
+            args['PRIMER_MIN_TM'] = primer_config.min_tm
+            args['PRIMER_MAX_TM'] = primer_config.max_tm
+            args['PRIMER_MAX_DIFF_TM'] = primer_config.max_tm_diff
+            args['PRIMER_OPT_GC_PERCENT'] = primer_config.opt_gc
+            args['PRIMER_MIN_GC'] = primer_config.min_gc
+            args['PRIMER_MAX_GC'] = primer_config.max_gc
+            args['PRIMER_MIN_SIZE'] = primer_config.min_size
+            args['PRIMER_OPT_SIZE'] = primer_config.opt_size
+            args['PRIMER_MAX_SIZE'] = primer_config.max_size
+            args['PRIMER_PRODUCT_SIZE_RANGE'] = primer_config.product_size_ranges
+        return cls(global_args=args)
+
     def design_for_marker(
         self,
         full_sequence: str,

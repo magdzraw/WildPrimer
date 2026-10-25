@@ -1,0 +1,54 @@
+# ==============================================================================
+# WildPrimer Configuration: Illumina Short Reads / De Novo Transcriptome
+# ==============================================================================
+platform: illumina
+
+qc:
+  enabled: true
+  min_length: 100
+  min_quality: 25.0
+  quality_offset: 33
+  trim_poly_at: true
+
+deduplication:
+  enabled: true
+  method: prefix_hash
+  prefix_length: 40
+  cluster_identity: 0.95
+
+assembly:
+  enabled: false               # Set true if input is raw Illumina paired reads needing assembly
+  assembler: spades
+  kmers: [21, 33, 55, 77]
+  careful: true
+
+mapping:
+  enabled: false
+  aligner: minimap2
+  preset: sr                   # Short reads preset
+  min_flanking_depth: 5        # Higher coverage depth expected for Illumina
+
+ssr:
+  min_repeats:
+    2: 6
+    3: 5
+    4: 4
+    5: 3
+    6: 3
+  exclude_mononucleotides: true
+  flank_size: 150
+
+primer:
+  opt_tm: 60.0
+  min_tm: 57.0
+  max_tm: 63.0
+  max_tm_diff: 2.0
+  opt_gc: 50.0
+  min_gc: 35.0
+  max_gc: 65.0
+  min_size: 18
+  opt_size: 20
+  max_size: 24
+  product_size_ranges:
+    - [100, 250]
+    - [80, 300]

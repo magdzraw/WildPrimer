@@ -1,9 +1,8 @@
 """
-WildPrimer: Molecular Marker Mining & Primer Design CLI.
+WildPrimer: Modular Molecular Marker Mining & Primer Design CLI.
 
-Orchestrates input ingestion (raw sequencing reads or de novo assemblies, plain or gzipped),
-SSR marker mining, and flanking PCR primer design for native, wild, and non-model plant species.
-Exports structured tables and summary reports ready for lab validation or publication.
+Orchestrates multi-stage input ingestion (raw sequencing reads or de novo assemblies, plain or gzipped),
+flexible QC filtering, deduplication / assembly hooks, SSR marker mining, and flanking PCR primer design.
 """
 
 import argparse
@@ -18,6 +17,7 @@ CURRENT_DIR = Path(__file__).resolve().parent
 if str(CURRENT_DIR) not in sys.path:
     sys.path.insert(0, str(CURRENT_DIR))
 
+from config import PipelineConfig
 from preprocessor import ReadPreprocessor
 from marker_detector import SSRDetector
 from primer_designer import PrimerDesigner
@@ -27,21 +27,17 @@ def run_pipeline(
     input_path: str,
     output_table: str,
     output_figure: str = None,
-    input_type: str = "auto",
-    min_read_length: int = 180,
-    min_quality: float = 20.0,
-    cluster_identity: float = 0.95,
-    max_reads: Optional[int] = None,
-    max_markers: Optional[int] = None,
-    flank_size: int = 150
+    config: Optional[PipelineConfig] = None,
+    input_type: str = "auto"
 ) -> pd.DataFrame:
     """
-    Execute full end-to-end marker detection and primer design pipeline for non-model plants.
-    Supports both de novo assemblies and raw reads (e.g. Roche 454, PacBio, Illumina FASTQ, plain or .gz).
+    Execute full multi-stage marker detection and primer design pipeline.
     """
     input_file = Path(input_path)
     if not input_file.exists():
         raise FileNotFoundError(f"Input sequence file not found: {input_path}")
+
+    cfg = config or PipelineConfig()
 
     # Handle UTF-8 encoding safely across OS terminals
     if hasattr(sys.stdout, "reconfigure"):
@@ -50,47 +46,57 @@ def run_pipeline(
         except Exception:
             pass
 
-    print("=" * 68)
-    print("[*] WildPrimer: Marker Mining & Primer Design for Non-Model Plants")
-    print("=" * 68)
+    print("=" * 70)
+    print("[*] WildPrimer: Multi-Stage Marker Mining & Primer Design")
+    print("=" * 70)
     print(f"[+] Ingesting sequence file: {input_file.resolve()}")
+    if cfg.platform != "auto":
+        print(f"[+] Platform preset active:  {cfg.platform.upper()}")
 
-    # 1. Flexible Input Layer & Preprocessing
-    preprocessor = ReadPreprocessor(
-        min_length=min_read_length,
-        min_quality=min_quality,
-        cluster_identity=cluster_identity
-    )
-
+    # -------------------------------------------------------------
+    # Stage 1 & 2: Multi-Stage Preprocessing, QC & Deduplication
+    # -------------------------------------------------------------
+    preprocessor = ReadPreprocessor.from_config(cfg)
     processed_dir = Path("data/processed")
+
     target_fasta, mode, metrics = preprocessor.prepare_input(
         input_file=input_file,
         output_dir=processed_dir,
         force_mode=input_type,
-        max_reads=max_reads
+        max_reads=cfg.max_reads,
+        assembly_config=cfg.assembly
     )
 
     if mode == "raw-reads":
-        print(f"[+] Input Mode: RAW READS (FASTQ / 454 sequencing detected)")
+        print(f"\n[Stage 1 & 2: Read Preprocessing & Quality Control]")
         qc = metrics["qc"]
-        print(f"    - Total raw reads parsed:         {qc['total_reads']:,}")
-        print(f"    - Discarded (length < {min_read_length} bp):    {qc['discarded_length']:,}")
-        print(f"    - Discarded (mean Phred Q < {min_quality}): {qc['discarded_quality']:,}")
-        print(f"    - Passed quality filters:         {qc['passed_reads']:,}")
+        if "total_reads" in qc and qc["total_reads"] > 0:
+            print(f"    - Total raw reads parsed:         {qc['total_reads']:,}")
+            print(f"    - Discarded (length < {cfg.qc.min_length} bp):    {qc['discarded_length']:,}")
+            print(f"    - Discarded (mean Phred Q < {cfg.qc.min_quality}): {qc['discarded_quality']:,}")
+            print(f"    - Passed QC filters:              {qc['passed_reads']:,}")
         
         clust = metrics["clustering"]
-        print(f"    - Redundant clonal reads removed: {clust['redundancy_reduced']:,} ({clust['method']})")
-        print(f"    - Final unique loci for mining:   {clust['clustered_unique']:,}")
-        print(f"    - Cleaned FASTA saved to:         {target_fasta.resolve()}")
+        if clust["method"] != "bypassed":
+            print(f"    - Redundant clonal reads removed: {clust['redundancy_reduced']:,} ({clust['method']})")
+            print(f"    - Unique candidate loci:          {clust['clustered_unique']:,}")
+
+        print(f"    - Cleaned FASTA ready:            {target_fasta.resolve()}")
     else:
-        print("[+] Input Mode: DE NOVO ASSEMBLY (Contigs / Transcripts)")
+        print("\n[Input Mode: DE NOVO ASSEMBLY (Contigs / Transcripts)]")
 
-    # 2. Sequence Ingestion for Mining
+    # -------------------------------------------------------------
+    # Stage 3: Candidate Sequence Ingestion & Marker Detection
+    # -------------------------------------------------------------
     records = list(SeqIO.parse(str(target_fasta), "fasta"))
-    print(f"\n[+] Scanning {len(records):,} sequence(s)/locus for microsatellites (SSRs)...")
+    print(f"\n[Stage 3: De Novo SSR Molecular Marker Mining]")
+    print(f"    - Scanning {len(records):,} sequence(s)/locus...")
 
-    detector = SSRDetector(flank_size=flank_size)
-    designer = PrimerDesigner()
+    detector = SSRDetector(
+        min_repeats=cfg.ssr.min_repeats,
+        flank_size=cfg.ssr.flank_size
+    )
+    designer = PrimerDesigner.from_config(cfg.primer)
 
     combined_results: List[Dict] = []
     total_markers_found = 0
@@ -110,7 +116,7 @@ def run_pipeline(
             total_markers_found += 1
             row_data = m.to_dict()
 
-            # Attempt primer design for this marker
+            # Stage 4: Primer Design
             primer_pair = designer.design_for_marker(
                 full_sequence=seq_str,
                 marker_start=m.start,
@@ -123,7 +129,6 @@ def run_pipeline(
                 row_data["primer_status"] = "DESIGNED"
             else:
                 row_data["primer_status"] = "FAILED_CONSTRAINTS"
-                # Fill blanks
                 for key in [
                     "primer_forward_seq", "primer_reverse_seq", "primer_forward_tm",
                     "primer_reverse_tm", "primer_forward_gc_percent",
@@ -133,22 +138,23 @@ def run_pipeline(
 
             combined_results.append(row_data)
 
-            if max_markers and total_primers_designed >= max_markers:
-                print(f"\n[!] Reached requested maximum of {max_markers} designed primers.")
+            if cfg.max_markers and total_primers_designed >= cfg.max_markers:
+                print(f"\n[!] Reached requested maximum limit of {cfg.max_markers} designed primers.")
                 break
 
-        if max_markers and total_primers_designed >= max_markers:
+        if cfg.max_markers and total_primers_designed >= cfg.max_markers:
             break
 
     df_results = pd.DataFrame(combined_results)
 
-    # 3. Export results table
+    # -------------------------------------------------------------
+    # Stage 5: Exporting Tables & Summary
+    # -------------------------------------------------------------
     out_path = Path(output_table)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     df_results.to_csv(out_path, sep="\t", index=False)
     print(f"\n[OK] Results successfully exported to: {out_path.resolve()}")
 
-    # 4. Print summary statistics
     print("\n" + "-" * 40)
     print("WildPrimer Execution Summary:")
     print("-" * 40)
@@ -162,7 +168,7 @@ def run_pipeline(
         for motif, count in motif_summary.items():
             print(f"  - {motif:15s}: {count:,}")
 
-    # 5. Generate visual figure if requested
+    # Visual Figure
     if output_figure and not df_results.empty:
         try:
             import matplotlib.pyplot as plt
@@ -187,48 +193,53 @@ def run_pipeline(
         except Exception as e:
             print(f"[!] Note: Visualization could not be generated ({e}).")
 
-    print("=" * 68)
+    print("=" * 70)
     return df_results
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="WildPrimer: Bioinformatics pipeline for SSR marker mining and primer design in non-model native plants."
+        description="WildPrimer: Modular Bioinformatics Pipeline for SSR Discovery & Primer Design."
     )
     parser.add_argument(
         "--input", "-i",
         default="examples/sample_plant_genes.fasta",
-        help="Path to input sequence file (.fasta, .fastq, .fastq.gz, .fna) (default: examples/sample_plant_genes.fasta)"
+        help="Input sequence file path (.fasta, .fastq, .fastq.gz, .fna)"
+    )
+    parser.add_argument(
+        "--config", "-c",
+        default=None,
+        help="Path to YAML configuration file (e.g. configs/nothofagus_454_thesis.yaml)"
+    )
+    parser.add_argument(
+        "--preset", "-p",
+        choices=["roche-454", "illumina", "pacbio-hifi", "nanopore", "assembly"],
+        default=None,
+        help="Apply platform preset (roche-454, illumina, pacbio-hifi, nanopore, assembly)"
     )
     parser.add_argument(
         "--input-type", "-t",
         choices=["auto", "assembly", "raw-reads"],
         default="auto",
-        help="Input data mode: 'auto' (detect automatically), 'assembly' (contigs), 'raw-reads' (FASTQ/454) (default: auto)"
+        help="Force input mode: 'auto', 'assembly' (contigs), 'raw-reads' (FASTQ)"
     )
     parser.add_argument(
         "--min-read-length",
         type=int,
-        default=180,
-        help="Minimum read length in bp for raw reads (default: 180)"
+        default=None,
+        help="Override minimum read length in bp for QC"
     )
     parser.add_argument(
         "--min-quality",
         type=float,
-        default=20.0,
-        help="Minimum mean Phred score for raw reads (default: 20.0)"
-    )
-    parser.add_argument(
-        "--cluster-identity",
-        type=float,
-        default=0.95,
-        help="Sequence similarity identity for deduplicating raw reads (default: 0.95)"
+        default=None,
+        help="Override minimum mean Phred score for QC"
     )
     parser.add_argument(
         "--max-reads",
         type=int,
         default=None,
-        help="Maximum raw reads to ingest (useful for fast exploration on massive datasets)"
+        help="Maximum raw reads to ingest (useful for fast exploration)"
     )
     parser.add_argument(
         "--max-markers",
@@ -239,33 +250,49 @@ def main():
     parser.add_argument(
         "--output-table", "-o",
         default="results/tables/designed_markers_primers.tsv",
-        help="Path for TSV output table (default: results/tables/designed_markers_primers.tsv)"
+        help="Destination path for TSV results table"
     )
     parser.add_argument(
         "--output-figure", "-f",
         default="results/figures/marker_distribution.png",
-        help="Path for summary figure (default: results/figures/marker_distribution.png)"
+        help="Destination path for summary figure"
     )
     parser.add_argument(
         "--flank",
         type=int,
-        default=150,
-        help="Flanking sequence length around SSR in bp (default: 150)"
+        default=None,
+        help="Flanking sequence length around SSR in bp"
     )
 
     args = parser.parse_args()
+
+    # Load or initialize config
+    if args.config:
+        cfg = PipelineConfig.from_yaml(Path(args.config))
+    elif args.preset:
+        cfg = PipelineConfig.from_preset(args.preset)
+    else:
+        cfg = PipelineConfig()
+
+    # Apply explicit CLI overrides if provided
+    if args.min_read_length is not None:
+        cfg.qc.min_length = args.min_read_length
+    if args.min_quality is not None:
+        cfg.qc.min_quality = args.min_quality
+    if args.max_reads is not None:
+        cfg.max_reads = args.max_reads
+    if args.max_markers is not None:
+        cfg.max_markers = args.max_markers
+    if args.flank is not None:
+        cfg.ssr.flank_size = args.flank
+
     try:
         run_pipeline(
             input_path=args.input,
             output_table=args.output_table,
             output_figure=args.output_figure,
-            input_type=args.input_type,
-            min_read_length=args.min_read_length,
-            min_quality=args.min_quality,
-            cluster_identity=args.cluster_identity,
-            max_reads=args.max_reads,
-            max_markers=args.max_markers,
-            flank_size=args.flank
+            config=cfg,
+            input_type=args.input_type
         )
     except Exception as err:
         print(f"[ERROR] WildPrimer execution failed: {err}", file=sys.stderr)
