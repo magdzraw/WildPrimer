@@ -11,6 +11,8 @@ import tempfile
 import streamlit as st
 import pandas as pd
 import matplotlib.pyplot as plt
+import yaml
+from Bio import SeqIO
 
 # Ensure local src/ package is in Python path
 ROOT_DIR = Path(__file__).resolve().parent
